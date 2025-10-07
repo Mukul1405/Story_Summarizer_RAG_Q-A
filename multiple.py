@@ -4,11 +4,14 @@ import json
 import requests
 from typing import List, Tuple
 
+
 import streamlit as st
 from dotenv import load_dotenv
 
+
 from io import BytesIO
 from tempfile import NamedTemporaryFile
+
 
 # Optionally available libs for docx/pdf/html parsing
 try:
@@ -16,15 +19,18 @@ try:
 except Exception:
     DocxDocument = None
 
+
 try:
     import PyPDF2
 except Exception:
     PyPDF2 = None
 
+
 try:
     from bs4 import BeautifulSoup
 except Exception:
     BeautifulSoup = None
+
 
 # LangChain pieces (standard names)
 try:
@@ -38,6 +44,7 @@ except Exception as e:
     st.error("Required langchain packages not found. Please install langchain and related packages.")
     raise
 
+
 # Try to import Groq provider (optional)
 USE_GROQ = False
 ChatGroq = None
@@ -48,9 +55,11 @@ except Exception:
     USE_GROQ = False
     ChatGroq = None
 
+
 # -------------------------
 # Utility functions
 # -------------------------
+
 
 def load_env_to_session():
     load_dotenv()
@@ -70,6 +79,13 @@ def load_env_to_session():
         st.session_state["docs_sources"] = []
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = []
+    if "qa_history" not in st.session_state:
+        st.session_state["qa_history"] = []
+    if "flow_diagram" not in st.session_state:
+        st.session_state["flow_diagram"] = None
+    if "story_data" not in st.session_state:
+        st.session_state["story_data"] = []
+
 
 def clean_org_for_api(org: str) -> str:
     if not org:
@@ -87,6 +103,7 @@ def clean_org_for_api(org: str) -> str:
             return parts[-1]
     return org
 
+
 def strip_html_to_text(html: str) -> str:
     if not html:
         return ""
@@ -97,6 +114,7 @@ def strip_html_to_text(html: str) -> str:
             pass
     text = re.sub(r"<[^>]+>", "", html)
     return text.strip()
+
 
 def azure_fetch_work_item(org: str, project: str, work_item_id: str, pat: str) -> Tuple[str, str]:
     if not all([org, project, work_item_id, pat]):
@@ -119,6 +137,7 @@ def azure_fetch_work_item(org: str, project: str, work_item_id: str, pat: str) -
     acceptance = fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or fields.get("Custom.AcceptanceCriteria") or ""
     return strip_html_to_text(description), strip_html_to_text(acceptance)
 
+
 def azure_run_wiql(org: str, project: str, wiql_query: str, pat: str) -> List[str]:
     if not all([org, project, wiql_query, pat]):
         raise ValueError("WIQL: org, project, query and PAT are required.")
@@ -134,6 +153,7 @@ def azure_run_wiql(org: str, project: str, wiql_query: str, pat: str) -> List[st
     items = data.get("workItems", [])
     ids = [str(i.get("id")) for i in items if i.get("id")]
     return ids
+
 
 def extract_text_from_file(uploaded_file) -> str:
     name = uploaded_file.name.lower()
@@ -175,6 +195,7 @@ def extract_text_from_file(uploaded_file) -> str:
     except Exception:
         return str(content)
 
+
 def build_docs_from_texts(title_text_pairs: List[Tuple[str, str]]) -> List[Document]:
     docs = []
     for title, text in title_text_pairs:
@@ -184,9 +205,18 @@ def build_docs_from_texts(title_text_pairs: List[Tuple[str, str]]) -> List[Docum
         docs.append(Document(page_content=content, metadata={"source": title}))
     return docs
 
+
 def extract_llm_text(llm_result) -> str:
     if isinstance(llm_result, str):
         return llm_result
+    
+    # Try to get content attribute directly (for ChatGroq responses)
+    try:
+        if hasattr(llm_result, 'content'):
+            return llm_result.content
+    except Exception:
+        pass
+    
     try:
         gens = getattr(llm_result, "generations", None)
         if gens:
@@ -210,6 +240,7 @@ def extract_llm_text(llm_result) -> str:
                     return m
     return str(llm_result)
 
+
 def get_llm_instance():
     groq_key = st.session_state.get("groq_key") or os.getenv("GROQ_API_KEY", "")
     if groq_key:
@@ -226,6 +257,7 @@ def get_llm_instance():
         "Set GROQ_API_KEY in .env and install langchain-groq, or modify get_llm_instance() to return a HuggingFace LLM."
     )
 
+
 def strict_split(text, chunk_size=1000, chunk_overlap=200):
     chunks = []
     start = 0
@@ -238,14 +270,88 @@ def strict_split(text, chunk_size=1000, chunk_overlap=200):
         start += chunk_size - chunk_overlap
     return chunks
 
+
+def generate_flow_diagram(title_text_pairs: List[Tuple[str, str]]) -> str:
+    """
+    Generate a Mermaid flow diagram using LLM to analyze story relationships
+    """
+    try:
+        llm = get_llm_instance()
+        
+        # Prepare content for LLM analysis
+        stories_text = "\n\n".join([
+            f"Story: {title}\nContent: {text[:2000]}"
+            for title, text in title_text_pairs
+        ])
+        
+        prompt = f"""Analyze the following user stories and create a Mermaid flowchart diagram showing their relationships and workflow.
+
+INSTRUCTIONS:
+1. Identify the main flow and dependencies between stories
+2. Create a LEFT-TO-RIGHT (LR) flowchart showing the logical progression
+3. Use appropriate node shapes:
+   - Rectangle for processes: A[Process Name]
+   - Rounded box for start/end: A([Start/End])
+   - Diamond for decisions: A{{Decision?}}
+4. Show relationships with arrows and labels
+5. Group related stories if they belong to the same feature
+6. Output ONLY valid Mermaid syntax starting with 'graph LR'
+7. Do NOT include any markdown code blocks, explanations, or additional text
+
+STORIES:
+{stories_text}
+
+Generate a Mermaid flowchart diagram (graph LR format only):"""
+
+        result = llm.invoke(prompt)
+        mermaid_code = extract_llm_text(result)
+        
+        # Clean up the response
+        mermaid_code = mermaid_code.strip()
+        
+        # Remove markdown code blocks if present
+        mermaid_code = re.sub(r'^```mermaid\s*', '', mermaid_code)
+        mermaid_code = re.sub(r'^```\s*', '', mermaid_code)
+        mermaid_code = re.sub(r'```\s*$', '', mermaid_code)
+        mermaid_code = mermaid_code.strip()
+        
+        # Ensure it starts with graph
+        if not mermaid_code.startswith('graph'):
+            mermaid_code = 'graph LR\n' + mermaid_code
+        
+        return mermaid_code
+    
+    except Exception as e:
+        # Fallback: Create a simple diagram if LLM fails
+        mermaid_code = "graph LR\n"
+        mermaid_code += "    Start([Start])\n"
+        
+        for idx, (title, _) in enumerate(title_text_pairs):
+            clean_title = title.replace('-', '_').replace(' ', '_')[:30]
+            node_id = f"Story{idx+1}"
+            mermaid_code += f"    {node_id}[{title}]\n"
+            
+            if idx == 0:
+                mermaid_code += f"    Start --> {node_id}\n"
+            else:
+                mermaid_code += f"    Story{idx} --> {node_id}\n"
+        
+        mermaid_code += f"    Story{len(title_text_pairs)} --> End([End])\n"
+        
+        return mermaid_code
+
+
 # -------------------------
 # App UI & flow
 # -------------------------
 
+
 st.set_page_config(page_title="Story Summarizer (Multi) + QnA", layout="wide")
 load_env_to_session()
 
+
 st.title("Azure DevOps Story Summarizer — Multi-story / WIQL / Multi-PDF + Q&A")
+
 
 st.sidebar.header("Configuration / Credentials")
 org_input = st.sidebar.text_input("Azure DevOps Organization (org)", key="org", help="Example: dpwhotfsonline or https://dev.azure.com/dpwhotfsonline")
@@ -254,7 +360,9 @@ pat_input = st.sidebar.text_input("Azure DevOps PAT (personal access token)", ke
 st.sidebar.caption("Make sure PAT has 'Work Items (Read)' permissions.")
 st.sidebar.write("GROQ_API_KEY present: " + ("Yes" if st.session_state.get("groq_key") else "No"))
 
+
 mode = st.radio("Input mode", ["Story IDs (comma-separated)", "WIQL Query", "Upload files (PDF/DOCX/TXT)"])
+
 
 col1, col2 = st.columns([3,1])
 with col1:
@@ -265,13 +373,17 @@ with col1:
     else:
         uploaded_files = st.file_uploader("Upload files (PDF, DOCX, TXT). You can upload multiple.", accept_multiple_files=True, type=["pdf","docx","txt","md"])
 
+
 with col2:
     st.markdown("### Options")
     append_mode = st.checkbox("Append to existing embedded corpus (don't overwrite)", value=False)
+    generate_diagram = st.checkbox("Generate Flow Diagram", value=True, help="Create visual workflow diagram")
     process_btn = st.button("Fetch / Embed & Summarize")
+
 
 status = st.empty()
 embed_model_name = "sentence-transformers/all-MiniLM-L6-v2"
+
 
 if process_btn:
     try:
@@ -315,9 +427,13 @@ if process_btn:
                     except Exception as e:
                         st.warning(f"Failed to read {f.name}: {e}")
 
+
         if not title_text_pairs:
             status.error("No content collected to embed. Fix errors above and try again.")
         else:
+            # Store story data for diagram generation
+            st.session_state["story_data"] = title_text_pairs
+            
             docs = build_docs_from_texts(title_text_pairs)
             if not docs:
                 status.error("No valid text extracted from inputs.")
@@ -342,15 +458,32 @@ if process_btn:
                 st.session_state["docs_sources"] = [t for t, _ in title_text_pairs]
                 try:
                     llm = get_llm_instance()
-                    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+                    # Preserve existing memory if retrieval chain exists, otherwise create new
+                    if st.session_state.get("retrieval_chain") is not None:
+                        existing_memory = st.session_state["retrieval_chain"].memory
+                        memory = existing_memory
+                    else:
+                        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+                    
                     retriever = st.session_state["vectorstore"].as_retriever(search_kwargs={"k": 4})
                     conv_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
                     st.session_state["retrieval_chain"] = conv_chain
-                    status.success("Embeddings created and LLM chain initialized.")
+                    status.success("Embeddings created and LLM chain initialized. Conversation history preserved.")
                 except Exception as e:
                     st.session_state["retrieval_chain"] = None
                     status.warning(f"Embeddings created but LLM not initialized: {e}")
                     st.info("To enable LLM, set GROQ_API_KEY in .env and install langchain-groq, or modify get_llm_instance().")
+                
+                # Generate flow diagram if requested
+                if generate_diagram and len(title_text_pairs) > 0:
+                    status.info("Generating flow diagram...")
+                    try:
+                        flow_diagram = generate_flow_diagram(title_text_pairs)
+                        st.session_state["flow_diagram"] = flow_diagram
+                    except Exception as e:
+                        st.warning(f"Could not generate flow diagram: {e}")
+                        st.session_state["flow_diagram"] = None
+                
                 status.info("Generating combined layman summary...")
                 combined_text = "\n\n".join([f"{title}\n\n{text[:5000]}" for title, text in title_text_pairs])
                 summary_prompt = (
@@ -370,6 +503,7 @@ if process_btn:
     f"{combined_text}\n"
     "CONTENT END"
 )
+
 
                 layman_summary = None
                 try:
@@ -394,47 +528,90 @@ if process_btn:
     except Exception as e:
         status.error(f"Failed to process inputs: {e}")
 
+
+# NEW SECTION: Flow Diagram
+if st.session_state.get("flow_diagram"):
+    st.markdown("---")
+    st.header("📊 Visual Flow Diagram")
+    
+    col_diagram, col_regenerate = st.columns([4, 1])
+    
+    with col_diagram:
+        st.info("🎨 This diagram shows the workflow and relationships between your stories. Generated using AI analysis.")
+    
+    with col_regenerate:
+        if st.button("🔄 Regenerate Diagram"):
+            if st.session_state.get("story_data"):
+                with st.spinner("Regenerating..."):
+                    try:
+                        flow_diagram = generate_flow_diagram(st.session_state["story_data"])
+                        st.session_state["flow_diagram"] = flow_diagram
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to regenerate: {e}")
+    
+    # Clean the diagram code
+    diagram_code = st.session_state["flow_diagram"]
+    
+    # Remove any content=' prefix and trailing quotes/metadata
+    if "content='" in diagram_code or 'content="' in diagram_code:
+        # Extract just the mermaid code between the first graph and the last closing brace/newline
+        match = re.search(r'(graph\s+(?:LR|TD|TB|RL|BT).*?)(?=\'?\s*(?:additional_kwargs|response_metadata|\'}|$))', diagram_code, re.DOTALL)
+        if match:
+            diagram_code = match.group(1)
+    
+    # Remove escape characters and clean up
+    diagram_code = diagram_code.replace('\\n', '\n').replace('\\t', '\t')
+    diagram_code = re.sub(r'^```mermaid\s*', '', diagram_code.strip())
+    diagram_code = re.sub(r'^```\s*', '', diagram_code.strip())
+    diagram_code = re.sub(r'```\s*$', '', diagram_code.strip())
+    diagram_code = diagram_code.strip()
+    
+    # Display code block for reference
+    with st.expander("📝 View Mermaid Code (click to expand)", expanded=False):
+        st.code(diagram_code, language="mermaid")
+        if st.button("📋 Copy Info", key="copy_diagram_btn"):
+            st.info("💡 Select the code above and use Ctrl+C (or Cmd+C) to copy it!")
+    
+    # Render the diagram using Streamlit's native mermaid support
+    try:
+        st.markdown("### 🎯 Rendered Diagram")
+        # Streamlit renders mermaid when it's in a markdown code block
+        st.markdown(f"```mermaid\n{diagram_code}\n```")
+    except Exception as e:
+        st.error(f"Error rendering diagram: {e}")
+        st.info("💡 Tip: Copy the code above and paste it into https://mermaid.live for visualization")
+        st.code(diagram_code)
+
+
 st.markdown("---")
-st.header("Layman Summary")
+st.header("📄 Layman Summary")
 
-
-
-# Usage
 layman_summary = st.session_state.get("layman_summary")
 
 if layman_summary:
-    # Agar string hai aur content='...' format me aa rahi hai, extract sirf content
     if isinstance(layman_summary, str):
-        # Remove prefix content=' and trailing ' if exist
-        import re
         m = re.match(r"content=['\"](.*)['\"]", layman_summary, re.DOTALL)
         if m:
             markdown_text = m.group(1)
         else:
             markdown_text = layman_summary
     else:
-        # Agar dict/object format hai, try 'content' key
         markdown_text = getattr(layman_summary, "content", str(layman_summary))
     
-    # Replace escaped sequences (\n, \-) with proper markdown
     markdown_text = markdown_text.replace("\\n", "\n").replace("\\-", "-").replace("•", "-")
     
-    # Remove any non-printable / unwanted chars
     import string
     printable = set(string.printable)
     markdown_text = ''.join(filter(lambda x: x in printable or x in "\n\t", markdown_text))
     
-    # Render in Streamlit
     st.markdown(markdown_text, unsafe_allow_html=True)
-
 else:
     st.info("No summary available yet. Provide inputs and click 'Fetch / Embed & Summarize'.")
 
 
-
-
 st.markdown("---")
-st.header("Ask questions about the embedded content")
+st.header("💬 Ask Questions About Your Content")
 
 if st.session_state.get("vectorstore") is None:
     st.info("No embedded content yet. Embed content first to enable Q&A.")
@@ -442,48 +619,82 @@ else:
     if st.session_state.get("retrieval_chain") is None:
         st.warning("Vectorstore ready but LLM chain not initialized. Please configure GROQ_API_KEY or update get_llm_instance().")
     else:
-        q_col, a_col = st.columns([4,1])
-        with q_col:
-            user_q = st.text_input("Ask a question (e.g., 'Summarize in layman terms', 'List important scenarios', 'What are edge cases?')", key="user_question")
-            if st.button("Send Question"):
-                if not user_q or not user_q.strip():
-                    st.warning("Please type a question.")
-                else:
-                    status.info("Answering...")
-                    try:
-                        chain = st.session_state["retrieval_chain"]
-                        result = chain.invoke({"question": user_q})
-                        answer = extract_llm_text(result)
-                        st.session_state["chat_history"].append(("You", user_q))
-                        st.session_state["chat_history"].append(("Assistant", answer))
-                        st.success("Answer received.")
-                    except Exception as e:
-                        st.error(f"Error when running retrieval chain: {e}")
-        with a_col:
-            st.write("Sources")
-            ss = st.session_state.get("docs_sources", [])
-            if ss:
-                for s in ss:
-                    st.write("- " + s)
-            else:
-                st.write("No sources list available.")
-        if st.session_state["chat_history"]:
-            st.markdown("#### Chat history (most recent last)")
-            for role, txt in st.session_state["chat_history"][-20:]:
-                if role == "You":
-                    st.markdown(f"**You:** {txt}")
-                else:
-                    st.markdown(f"**Assistant:** {txt}")
+        # Use form with unique key and clear_on_submit
+        with st.form(key="qa_form_unique", clear_on_submit=True):
+            user_q = st.text_input(
+                "Ask a question (maintains context from previous conversations):",
+                placeholder="e.g. 'What are the main features?' or 'Tell me more about the previous answer'",
+                key="user_q_input_unique"
+            )
+            submit_q = st.form_submit_button("Ask Question")
+
+        if submit_q and user_q.strip():
+            try:
+                with st.spinner("🤔 Thinking..."):
+                    chain = st.session_state["retrieval_chain"]
+                    
+                    # The ConversationalRetrievalChain automatically maintains context
+                    # through its memory component
+                    result = chain.invoke({"question": user_q})
+                    answer = extract_llm_text(result)
+
+                    # Store latest question at the beginning (index 0)
+                    # This makes the latest Q&A appear on top
+                    st.session_state.qa_history.insert(0, (user_q, answer))
+                    st.success("✅ Answer ready!")
+                    st.rerun()  # Refresh to show the new Q&A at the top
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
+
+        # Display chat history with latest on top
+        if st.session_state.qa_history:
+            # Show context indicator
+            total_questions = len(st.session_state.qa_history)
+            st.markdown(f"### 💬 Conversation History ({total_questions} question{'s' if total_questions != 1 else ''})")
+            st.info("🧠 **Context Enabled**: Each new question remembers previous conversations. Try asking follow-up questions like 'tell me more about that' or 'which checklist did I ask for earlier?'")
+            
+            for idx, (q, a) in enumerate(st.session_state.qa_history):
+                # Calculate the actual question number (latest is Q1, Q2, etc.)
+                q_number = len(st.session_state.qa_history) - idx
+                
+                with st.expander(f"❓ Q{q_number}: {q}", expanded=(idx == 0)):  # Expand only the latest
+                    st.markdown(f"**Answer:**\n\n{a}")
+        else:
+            st.info("💡 No questions asked yet. Type your first question above!")
+
 
 st.markdown("---")
-st.subheader("Debug & Utilities")
-if st.button("Show embedded sources"):
-    st.json(st.session_state.get("docs_sources", []))
+st.subheader("🔧 Debug & Utilities")
 
-if st.button("Reset session (clear vectorstore & chat)"):
-    st.session_state.pop("vectorstore", None)
-    st.session_state.pop("retrieval_chain", None)
-    st.session_state.pop("docs_sources", None)
-    st.session_state.pop("layman_summary", None)
-    st.session_state.pop("chat_history", None)
-    st.success("Session cleared. Reload the page to ensure a clean state.")
+col_debug1, col_debug2, col_debug3 = st.columns(3)
+
+with col_debug1:
+    if st.button("📄 Show embedded sources", key="show_sources_btn"):
+        st.json(st.session_state.get("docs_sources", []))
+
+with col_debug2:
+    if st.button("🎨 Manual Diagram Generation", key="manual_diagram_btn"):
+        if st.session_state.get("story_data"):
+            with st.spinner("Generating diagram..."):
+                try:
+                    flow_diagram = generate_flow_diagram(st.session_state["story_data"])
+                    st.session_state["flow_diagram"] = flow_diagram
+                    st.success("Diagram generated! Scroll up to view.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+        else:
+            st.warning("No story data available. Process stories first.")
+
+with col_debug3:
+    if st.button("🗑️ Reset session (clear all data)", key="reset_session_btn"):
+        st.session_state.pop("vectorstore", None)
+        st.session_state.pop("retrieval_chain", None)
+        st.session_state.pop("docs_sources", None)
+        st.session_state.pop("layman_summary", None)
+        st.session_state.pop("chat_history", None)
+        st.session_state.pop("qa_history", None)
+        st.session_state.pop("flow_diagram", None)
+        st.session_state.pop("story_data", None)
+        st.success("✅ Session cleared. Reload the page for a clean state.")
+        st.rerun()
