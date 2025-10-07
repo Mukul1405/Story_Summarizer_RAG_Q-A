@@ -1,0 +1,14 @@
+langchain
+faiss-cpu
+requests
+python-dotenv
+tqdm
+openai
+langchain_groq
+langchain-huggingface
+langchain_community
+langchain_core
+streamlit
+docx
+PyPDF2
+sentence_transformers
