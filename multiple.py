@@ -403,23 +403,32 @@ st.header("Layman Summary")
 layman_summary = st.session_state.get("layman_summary")
 
 if layman_summary:
-    # Agar dict/object hai
-    if isinstance(layman_summary, dict):
-        markdown_text = layman_summary.get("content", "")
-    else:
-        # Agar string hai aur content='...' format me aa rahi hai
+    # Agar string hai aur content='...' format me aa rahi hai, extract sirf content
+    if isinstance(layman_summary, str):
+        # Remove prefix content=' and trailing ' if exist
         import re
-        m = re.match(r"content=['\"](.*)['\"]", str(layman_summary), re.DOTALL)
-        markdown_text = m.group(1) if m else str(layman_summary)
-
-    # Clean escaped characters
+        m = re.match(r"content=['\"](.*)['\"]", layman_summary, re.DOTALL)
+        if m:
+            markdown_text = m.group(1)
+        else:
+            markdown_text = layman_summary
+    else:
+        # Agar dict/object format hai, try 'content' key
+        markdown_text = getattr(layman_summary, "content", str(layman_summary))
+    
+    # Replace escaped sequences (\n, \-) with proper markdown
     markdown_text = markdown_text.replace("\\n", "\n").replace("\\-", "-").replace("•", "-")
-
-    # Render
+    
+    # Remove any non-printable / unwanted chars
+    import string
+    printable = set(string.printable)
+    markdown_text = ''.join(filter(lambda x: x in printable or x in "\n\t", markdown_text))
+    
+    # Render in Streamlit
     st.markdown(markdown_text, unsafe_allow_html=True)
+
 else:
     st.info("No summary available yet. Provide inputs and click 'Fetch / Embed & Summarize'.")
-
 
 
 

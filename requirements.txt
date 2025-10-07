@@ -12,3 +12,4 @@ streamlit
 docx
 PyPDF2
 sentence_transformers
+bs4
