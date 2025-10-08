@@ -540,7 +540,7 @@ if st.session_state.get("flow_diagram"):
         st.info("🎨 This diagram shows the workflow and relationships between your stories. Generated using AI analysis.")
     
     with col_regenerate:
-        if st.button("🔄 Regenerate Diagram"):
+        if st.button("🔄 Regenerate Diagram", key="regenerate_diagram_btn"):
             if st.session_state.get("story_data"):
                 with st.spinner("Regenerating..."):
                     try:
@@ -567,26 +567,219 @@ if st.session_state.get("flow_diagram"):
     diagram_code = re.sub(r'```\s*$', '', diagram_code.strip())
     diagram_code = diagram_code.strip()
     
-    # Display code block for reference
-    with st.expander("📝 View Mermaid Code (click to expand)", expanded=False):
-        st.code(diagram_code, language="mermaid")
-        if st.button("📋 Copy Info", key="copy_diagram_btn"):
-            st.info("💡 Select the code above and use Ctrl+C (or Cmd+C) to copy it!")
+    # Create tabs for different viewing options
+    tab1, tab2, tab3 = st.tabs(["🎯 Visual Diagram", "📝 Mermaid Code", "🔗 External Viewer"])
     
-    # Render the diagram using Streamlit's native mermaid support
-    try:
-        st.markdown("### 🎯 Rendered Diagram")
-        # Streamlit renders mermaid when it's in a markdown code block
-        st.markdown(f"```mermaid\n{diagram_code}\n```")
-    except Exception as e:
-        st.error(f"Error rendering diagram: {e}")
-        st.info("💡 Tip: Copy the code above and paste it into https://mermaid.live for visualization")
-        st.code(diagram_code)
+    with tab1:
+        st.markdown("### Interactive Diagram")
+        
+        # Use HTML iframe with Mermaid.js CDN for rendering with zoom controls
+        mermaid_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+            <script>
+                mermaid.initialize({{ 
+                    startOnLoad: true,
+                    theme: 'default',
+                    flowchart: {{
+                        useMaxWidth: false,
+                        htmlLabels: true,
+                        curve: 'basis'
+                    }}
+                }});
+            </script>
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    margin: 0;
+                    padding: 0;
+                    background-color: #ffffff;
+                    overflow: hidden;
+                }}
+                #diagram-container {{
+                    position: relative;
+                    width: 100%;
+                    height: 580px;
+                    overflow: auto;
+                    border: 1px solid #ddd;
+                    background-color: #fafafa;
+                }}
+                #diagram-wrapper {{
+                    transform-origin: 0 0;
+                    transition: transform 0.3s ease;
+                    padding: 20px;
+                    display: inline-block;
+                    min-width: 100%;
+                }}
+                .zoom-controls {{
+                    position: absolute;
+                    top: 10px;
+                    right: 10px;
+                    z-index: 1000;
+                    background: white;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                    padding: 8px;
+                    display: flex;
+                    gap: 5px;
+                }}
+                .zoom-btn {{
+                    background: #0066cc;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 8px 12px;
+                    cursor: pointer;
+                    font-size: 16px;
+                    font-weight: bold;
+                    transition: background 0.2s;
+                }}
+                .zoom-btn:hover {{
+                    background: #0052a3;
+                }}
+                .zoom-btn:active {{
+                    background: #004080;
+                }}
+                .zoom-level {{
+                    padding: 8px 12px;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: #333;
+                    min-width: 60px;
+                    text-align: center;
+                }}
+                .mermaid {{
+                    text-align: center;
+                }}
+            </style>
+        </head>
+        <body>
+            <div id="diagram-container">
+                <div class="zoom-controls">
+                    <button class="zoom-btn" onclick="zoomOut()" title="Zoom Out">−</button>
+                    <span class="zoom-level" id="zoom-level">100%</span>
+                    <button class="zoom-btn" onclick="zoomIn()" title="Zoom In">+</button>
+                    <button class="zoom-btn" onclick="resetZoom()" title="Reset Zoom">⟲</button>
+                </div>
+                <div id="diagram-wrapper">
+                    <div class="mermaid">
+{diagram_code}
+                    </div>
+                </div>
+            </div>
+            
+            <script>
+                let currentZoom = 1.0;
+                const zoomStep = 0.2;
+                const minZoom = 0.4;
+                const maxZoom = 3.0;
+                
+                function updateZoom() {{
+                    const wrapper = document.getElementById('diagram-wrapper');
+                    wrapper.style.transform = `scale(${{currentZoom}})`;
+                    document.getElementById('zoom-level').textContent = Math.round(currentZoom * 100) + '%';
+                }}
+                
+                function zoomIn() {{
+                    if (currentZoom < maxZoom) {{
+                        currentZoom = Math.min(currentZoom + zoomStep, maxZoom);
+                        updateZoom();
+                    }}
+                }}
+                
+                function zoomOut() {{
+                    if (currentZoom > minZoom) {{
+                        currentZoom = Math.max(currentZoom - zoomStep, minZoom);
+                        updateZoom();
+                    }}
+                }}
+                
+                function resetZoom() {{
+                    currentZoom = 1.0;
+                    updateZoom();
+                }}
+                
+                // Keyboard shortcuts
+                document.addEventListener('keydown', function(e) {{
+                    if (e.ctrlKey || e.metaKey) {{
+                        if (e.key === '+' || e.key === '=') {{
+                            e.preventDefault();
+                            zoomIn();
+                        }} else if (e.key === '-') {{
+                            e.preventDefault();
+                            zoomOut();
+                        }} else if (e.key === '0') {{
+                            e.preventDefault();
+                            resetZoom();
+                        }}
+                    }}
+                }});
+                
+                // Mouse wheel zoom
+                document.getElementById('diagram-container').addEventListener('wheel', function(e) {{
+                    if (e.ctrlKey || e.metaKey) {{
+                        e.preventDefault();
+                        if (e.deltaY < 0) {{
+                            zoomIn();
+                        }} else {{
+                            zoomOut();
+                        }}
+                    }}
+                }}, {{ passive: false }});
+            </script>
+        </body>
+        </html>
+        """
+        
+        try:
+            import streamlit.components.v1 as components
+            components.html(mermaid_html, height=600, scrolling=False)
+            st.caption("💡 **Zoom controls:** Use buttons above or **Ctrl + Plus/Minus** | **Ctrl + Mouse Wheel** | **Ctrl + 0** to reset")
+        except Exception as e:
+            st.error(f"Could not render interactive diagram: {e}")
+            st.info("👉 Please use the 'External Viewer' tab to view the diagram")
+    
+    with tab2:
+        st.markdown("### Mermaid Code")
+        st.code(diagram_code, language="mermaid")
+        
+        col_copy1, col_copy2 = st.columns(2)
+        with col_copy1:
+            if st.button("📋 How to Copy", key="how_to_copy_btn"):
+                st.info("💡 Select the code above and use **Ctrl+C** (Windows/Linux) or **Cmd+C** (Mac) to copy!")
+        with col_copy2:
+            st.download_button(
+                label="💾 Download Code",
+                data=diagram_code,
+                file_name="flow_diagram.mmd",
+                mime="text/plain",
+                key="download_mermaid_btn"
+            )
+    
+    with tab3:
+        st.markdown("### External Mermaid Viewer")
+        st.info("👉 If the diagram doesn't render properly above, you can view it using these options:")
+        
+        import urllib.parse
+        
+        col_ext1, col_ext2 = st.columns(2)
+        
+        with col_ext1:
+            st.markdown("#### Option 1: Mermaid Live Editor")
+            st.markdown("[🔗 Open Mermaid Live](https://mermaid.live)")
+            st.caption("Copy code from 'Mermaid Code' tab and paste in editor")
+        
+        with col_ext2:
+            st.markdown("#### Option 2: VS Code Extension")
+            st.markdown("Install **Mermaid Preview** extension")
+            st.code("ext install vstirbu.vscode-mermaid-preview", language="bash")
+            st.caption("Save code as `.mmd` file and preview")
 
 
 st.markdown("---")
 st.header("📄 Layman Summary")
-
 layman_summary = st.session_state.get("layman_summary")
 
 if layman_summary:
@@ -619,7 +812,6 @@ else:
     if st.session_state.get("retrieval_chain") is None:
         st.warning("Vectorstore ready but LLM chain not initialized. Please configure GROQ_API_KEY or update get_llm_instance().")
     else:
-        # Use form with unique key and clear_on_submit
         with st.form(key="qa_form_unique", clear_on_submit=True):
             user_q = st.text_input(
                 "Ask a question (maintains context from previous conversations):",
@@ -632,32 +824,22 @@ else:
             try:
                 with st.spinner("🤔 Thinking..."):
                     chain = st.session_state["retrieval_chain"]
-                    
-                    # The ConversationalRetrievalChain automatically maintains context
-                    # through its memory component
                     result = chain.invoke({"question": user_q})
                     answer = extract_llm_text(result)
-
-                    # Store latest question at the beginning (index 0)
-                    # This makes the latest Q&A appear on top
                     st.session_state.qa_history.insert(0, (user_q, answer))
                     st.success("✅ Answer ready!")
-                    st.rerun()  # Refresh to show the new Q&A at the top
+                    st.rerun()
             except Exception as e:
                 st.error(f"❌ Error: {e}")
 
-        # Display chat history with latest on top
         if st.session_state.qa_history:
-            # Show context indicator
             total_questions = len(st.session_state.qa_history)
             st.markdown(f"### 💬 Conversation History ({total_questions} question{'s' if total_questions != 1 else ''})")
             st.info("🧠 **Context Enabled**: Each new question remembers previous conversations. Try asking follow-up questions like 'tell me more about that' or 'which checklist did I ask for earlier?'")
             
             for idx, (q, a) in enumerate(st.session_state.qa_history):
-                # Calculate the actual question number (latest is Q1, Q2, etc.)
                 q_number = len(st.session_state.qa_history) - idx
-                
-                with st.expander(f"❓ Q{q_number}: {q}", expanded=(idx == 0)):  # Expand only the latest
+                with st.expander(f"❓ Q{q_number}: {q}", expanded=(idx == 0)):
                     st.markdown(f"**Answer:**\n\n{a}")
         else:
             st.info("💡 No questions asked yet. Type your first question above!")
