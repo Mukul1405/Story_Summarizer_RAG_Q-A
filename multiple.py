@@ -137,6 +137,35 @@ def azure_fetch_work_item(org: str, project: str, work_item_id: str, pat: str) -
     acceptance = fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or fields.get("Custom.AcceptanceCriteria") or ""
     return strip_html_to_text(description), strip_html_to_text(acceptance)
 
+def azure_fetch_work_item_comments(org: str, project: str, work_item_id: str, pat: str) -> List[str]:
+    """
+    Fetch comments for a specific Azure DevOps work item.
+    Returns a list of formatted comment strings.
+    """
+    try:
+        org_clean = clean_org_for_api(org)
+        base_url = f"https://dev.azure.com/{org_clean}"
+        url = f"{base_url}/{project}/_apis/wit/workItems/{work_item_id}/comments?api-version=7.1-preview.3"
+        
+        resp = requests.get(url, auth=("", pat))
+        if resp.status_code != 200:
+            if resp.status_code == 404:
+                return []  # No comments found
+            raise RuntimeError(f"Failed to fetch comments for {work_item_id}: {resp.status_code} - {resp.text[:200]}")
+        
+        data = resp.json()
+        comments = data.get("comments", [])
+        result = []
+        for c in comments:
+            author = c.get("createdBy", {}).get("displayName", "Unknown")
+            text = strip_html_to_text(c.get("text", "")).strip()
+            if text:
+                result.append(f"- {author}: {text}")
+        return result
+    except Exception as e:
+        st.warning(f"Comment fetch failed for {work_item_id}: {e}")
+        return []
+
 
 def azure_run_wiql(org: str, project: str, wiql_query: str, pat: str) -> List[str]:
     if not all([org, project, wiql_query, pat]):
@@ -392,9 +421,19 @@ if process_btn:
                 status.info(f"Fetching {len(ids)} work items from Azure DevOps...")
                 for sid in ids:
                     try:
+                        # desc, ac = azure_fetch_work_item(org_input, project_input, sid, pat_input)
+                        # combined = "\n\n".join([("Description:\n" + desc) if desc else "", ("Acceptance Criteria:\n" + ac) if ac else ""])
+                        # title_text_pairs.append((f"WorkItem-{sid}", combined.strip()))
                         desc, ac = azure_fetch_work_item(org_input, project_input, sid, pat_input)
-                        combined = "\n\n".join([("Description:\n" + desc) if desc else "", ("Acceptance Criteria:\n" + ac) if ac else ""])
+                        comments = azure_fetch_work_item_comments(org_input, project_input, sid, pat_input)
+                        comments_text = "\n".join(comments) if comments else "No comments found."
+                        combined = "\n\n".join([
+                            ("Description:\n" + desc) if desc else "",
+                            ("Acceptance Criteria:\n" + ac) if ac else "",
+                            ("Comments:\n" + comments_text) if comments_text else ""
+                        ])
                         title_text_pairs.append((f"WorkItem-{sid}", combined.strip()))
+
                     except Exception as e:
                         st.warning(f"Failed to fetch {sid}: {e}")
         elif mode == "WIQL Query":
