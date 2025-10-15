@@ -137,34 +137,199 @@ def azure_fetch_work_item(org: str, project: str, work_item_id: str, pat: str) -
     acceptance = fields.get("Microsoft.VSTS.Common.AcceptanceCriteria") or fields.get("Custom.AcceptanceCriteria") or ""
     return strip_html_to_text(description), strip_html_to_text(acceptance)
 
-def azure_fetch_work_item_comments(org: str, project: str, work_item_id: str, pat: str) -> List[str]:
+def azure_fetch_work_item_comments(org: str, project: str, work_item_id: str, pat: str) -> List[dict]:
     """
-    Fetch comments for a specific Azure DevOps work item.
-    Returns a list of formatted comment strings.
+    Fetch ALL comments for a work item with pagination and priority ranking.
+    Returns list of dicts: [{'author': str, 'text': str, 'created': str, 'weight': int}]
     """
     try:
         org_clean = clean_org_for_api(org)
         base_url = f"https://dev.azure.com/{org_clean}"
         url = f"{base_url}/{project}/_apis/wit/workItems/{work_item_id}/comments?api-version=7.1-preview.3"
-        
-        resp = requests.get(url, auth=("", pat))
-        if resp.status_code != 200:
+
+        all_comments = []
+        continuation_token = None
+
+        while True:
+            headers = {}
+            if continuation_token:
+                headers["x-ms-continuationtoken"] = continuation_token
+
+            resp = requests.get(url, auth=("", pat), headers=headers)
             if resp.status_code == 404:
-                return []  # No comments found
-            raise RuntimeError(f"Failed to fetch comments for {work_item_id}: {resp.status_code} - {resp.text[:200]}")
-        
-        data = resp.json()
-        comments = data.get("comments", [])
-        result = []
-        for c in comments:
-            author = c.get("createdBy", {}).get("displayName", "Unknown")
-            text = strip_html_to_text(c.get("text", "")).strip()
-            if text:
-                result.append(f"- {author}: {text}")
-        return result
+                break  # No comments
+            resp.raise_for_status()
+
+            data = resp.json()
+            comments = data.get("comments", [])
+            for c in comments:
+                author = c.get("createdBy", {}).get("displayName", "Unknown")
+                text = strip_html_to_text(c.get("text", "")).strip()
+                created = c.get("createdDate", "")
+                if text:
+                    weight = 1
+                    name_lower = author.lower()
+                    if any(k in name_lower for k in ["dev", "developer", "engineer"]):
+                        weight = 3
+                    elif any(k in name_lower for k in ["qa", "test"]):
+                        weight = 2
+                    elif any(k in name_lower for k in ["po", "manager", "lead"]):
+                        weight = 1
+
+                    all_comments.append({
+                        "author": author,
+                        "text": text,
+                        "created": created,
+                        "weight": weight
+                    })
+
+            continuation_token = resp.headers.get("x-ms-continuationtoken")
+            if not continuation_token:
+                break  # no more pages
+
+        # Sort by weight (desc) then recency
+        all_comments.sort(key=lambda x: (x["weight"], x["created"]), reverse=True)
+        return all_comments
+
     except Exception as e:
         st.warning(f"Comment fetch failed for {work_item_id}: {e}")
         return []
+
+
+import urllib.parse
+
+def azure_fetch_linked_prs(org: str, project: str, work_item_id: str, pat: str) -> List[dict]:
+    """
+    Fetch Pull Requests linked to a given Azure DevOps work item.
+    Supports 3-part vstfs PullRequestId format:
+    vstfs:///Git/PullRequestId/<projectId>%2F<repoId>%2F<prId>
+    Returns: list of dicts [{ 'projectId': str, 'repoId': str, 'prId': str }]
+    """
+    try:
+        org_clean = clean_org_for_api(org)
+        base_url = f"https://dev.azure.com/{org_clean}"
+        url = f"{base_url}/{project}/_apis/wit/workItems/{work_item_id}?$expand=relations&api-version=7.1"
+
+        resp = requests.get(url, auth=("", pat))
+        resp.raise_for_status()
+        data = resp.json()
+
+        relations = data.get("relations", [])
+        prs = []
+
+        for rel in relations:
+            url_val = rel.get("url", "")
+            if "PullRequestId" in url_val:
+                encoded = url_val.split("PullRequestId/")[-1]
+                decoded = urllib.parse.unquote(encoded)  # decode %2F → /
+                parts = decoded.split("/")
+                if len(parts) == 3:  # ProjectID / RepoID / PRID
+                    project_id, repo_id, pr_id = parts
+                    prs.append({
+                        "projectId": project_id,
+                        "repoId": repo_id,
+                        "prId": pr_id
+                    })
+        return prs
+    except Exception as e:
+        st.warning(f"PR fetch failed for {work_item_id}: {e}")
+        return []
+
+def azure_fetch_pr_changes(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[str]:
+    """
+    Fetch changed files for a PR (latest iteration)
+    Supports both 'changes' and 'changeEntries' keys
+    """
+    try:
+        org_clean = clean_org_for_api(org)
+        base_url = f"https://dev.azure.com/{org_clean}"
+
+        # Get latest iteration
+        iter_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations?api-version=7.1"
+        iter_resp = requests.get(iter_url, auth=("", pat))
+        iter_resp.raise_for_status()
+        iter_data = iter_resp.json()
+        iterations = iter_data.get("value", [])
+        latest_iter = iterations[-1]["id"] if iterations else 1
+
+        # Get changes for that iteration
+        change_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations/{latest_iter}/changes?api-version=7.1"
+        resp = requests.get(change_url, auth=("", pat))
+        resp.raise_for_status()
+        data = resp.json()
+
+        # ✅ handle both response formats
+        entries = data.get("changes") or data.get("changeEntries") or []
+        result = []
+        for c in entries:
+            item = c.get("item", {})
+            path = item.get("path", "")
+            change_type = c.get("changeType", "edit")
+            if path:
+                result.append(f"{change_type.title()}: {path}")
+
+        return result
+
+    except Exception as e:
+        st.warning(f"Failed to fetch PR changes: {e}")
+        return []
+
+
+def generate_pr_test_focus(org: str, project: str, story_id: str, pat: str, story_text: str) -> str:
+    """
+    Analyze linked PRs + code changes and generate Smart Testing Focus report using LLM.
+    """
+    try:
+        prs = azure_fetch_linked_prs(org, project, story_id, pat)
+        if not prs:
+            return f"*(No PRs linked to story {story_id})*"
+        
+        all_changes = []
+        for pr in prs:
+            repo_id = pr["repoId"]
+            pr_id = pr["prId"]
+            # pr_changes = azure_fetch_pr_changes(org, project, repo_id, pr_id, pat)
+            pr_changes = azure_fetch_pr_changes(org, pr["projectId"], pr["repoId"], pr["prId"], pat)
+            all_changes.extend(pr_changes)
+        
+        if not all_changes:
+            return "*(No changed files detected for linked PRs)*"
+        
+        # Limit change list for prompt brevity
+        changes_text = "\n".join(all_changes[:50])
+        
+        prompt = f"""
+You are an expert SDET and test architect.
+Based on the following STORY CONTEXT and CODE CHANGES from linked PRs,
+analyze where the system is most likely to break or any condition/check is missing and what areas need deep testing.
+
+STORY CONTEXT:
+{story_text[:1500]}
+
+CODE CHANGES:
+{changes_text}
+
+Generate your analysis in this format:
+### 🧠 Smart Testing Focus
+
+**High Risk Areas**
+- <short description>
+
+**Potential Break Points**
+- <short description>
+
+**Suggested Smart Test Cases**
+- <test case 1>
+- <test case 2>
+
+**Regression Scenarios**
+- <scenario 1>
+"""
+        llm = get_llm_instance()
+        raw = llm.invoke(prompt)
+        return extract_llm_text(raw)
+    except Exception as e:
+        return f"Error during PR analysis: {e}"
 
 
 def azure_run_wiql(org: str, project: str, wiql_query: str, pat: str) -> List[str]:
@@ -426,7 +591,15 @@ if process_btn:
                         # title_text_pairs.append((f"WorkItem-{sid}", combined.strip()))
                         desc, ac = azure_fetch_work_item(org_input, project_input, sid, pat_input)
                         comments = azure_fetch_work_item_comments(org_input, project_input, sid, pat_input)
-                        comments_text = "\n".join(comments) if comments else "No comments found."
+                        if comments:
+                            formatted_comments = "\n".join(
+                                [f"- [{c['author']}] ({c['created']}) ⭐{c['weight']}: {c['text']}" for c in comments]
+                            )
+                        else:
+                            formatted_comments = "No comments found."
+                        comments_text = formatted_comments
+
+
                         combined = "\n\n".join([
                             ("Description:\n" + desc) if desc else "",
                             ("Acceptance Criteria:\n" + ac) if ac else "",
@@ -511,11 +684,43 @@ if process_btn:
                 
                 status.info("Generating summary...")
                 combined_text = "\n\n".join([f"{title}\n\n{text[:5000]}" for title, text in title_text_pairs])
-                summary_prompt = f"""Summarize the following user stories in markdown format.
-                
+                summary_prompt = f"""
+You are an expert Agile analyst and QA architect.
+Summarize the following Azure DevOps user stories clearly in Markdown format.
+
+Make sure to:
+1. Extract main objectives from Description and Acceptance Criteria.
+2. Analyze developer and QA comments for decisions, deferrals, or concerns.
+3. Highlight any risk areas, incomplete work, or postponed validations.
+4. Give a short “Discussion Summary” section for each story.
+
+Each story summary should follow this format:
+
+### 🧩 {{Story Title}}
+
+**Overview**
+- One or two lines explaining what this story is about.
+
+**Layman Summary**
+- Summarize the whole story in layman terms + bullet points
+
+**P0 Scenarios**
+- Tell the most critical and P0 scenarios which are mandatory
+
+**Acceptance & Completion Criteria**
+- Summarize the acceptance or done conditions.
+
+**Comment Insights**
+- Mention relevant comments or discussion takeaways.
+- Prioritize developer or QA comments (⭐3 or ⭐2).
+
+---
+
 CONTENT START
 {combined_text}
-CONTENT END"""
+CONTENT END
+"""
+
 
                 try:
                     llm_temp = get_llm_instance()
@@ -639,6 +844,40 @@ else:
             with st.expander(f"Q{len(st.session_state.qa_history) - idx}: {q}", expanded=(idx == 0)):
                 st.markdown(f"**Answer:**\n\n{a}")
 
+
+# -------------------------
+# SMART TESTING FOCUS / RISK ANALYSIS SECTION
+# -------------------------
+st.markdown("---")
+st.header("🧪 Smart Testing Focus & Risk Zones")
+
+if st.session_state.get("story_data") and st.session_state.get("vectorstore"):
+    selected_story = st.selectbox(
+        "Select a story to analyze for linked PRs:",
+        options=[t for t, _ in st.session_state["story_data"]],
+        help="Choose a story whose PR impact you want to analyze"
+    )
+    
+    if st.button("🔍 Analyze Linked PRs & Suggest Test Focus"):
+        story_text = next((text for title, text in st.session_state["story_data"] if title == selected_story), "")
+        story_id = re.sub(r"[^\d]", "", selected_story)  # Extract numeric ID
+        with st.spinner("Analyzing PRs and generating smart testing insights..."):
+            pr_analysis = generate_pr_test_focus(
+                org=st.session_state["org"],
+                project=st.session_state["project"],
+                story_id=story_id,
+                pat=st.session_state["pat"],
+                story_text=story_text
+            )
+            st.session_state["pr_analysis"] = pr_analysis
+            st.success("✅ Analysis complete!")
+
+if st.session_state.get("pr_analysis"):
+    st.markdown(st.session_state["pr_analysis"], unsafe_allow_html=True)
+else:
+    st.info("Select a story and click 'Analyze Linked PRs & Suggest Test Focus' to generate insights.")
+
+
 # Debug
 st.markdown("---")
 col1, col2, col3 = st.columns(3)
@@ -656,3 +895,5 @@ with col3:
         for key in ["vectorstore", "retrieval_chain", "docs_sources", "layman_summary", "chat_history", "qa_history", "flow_diagram", "story_data"]:
             st.session_state.pop(key, None)
         st.rerun()
+
+
