@@ -246,100 +246,223 @@ def azure_fetch_linked_prs(org: str, project: str, work_item_id: str, pat: str) 
     except Exception as e:
         st.warning(f"PR fetch failed for {work_item_id}: {e}")
         return []
-
-def azure_fetch_pr_changes(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[str]:
+def azure_fetch_pr_changes(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[dict]:
     """
-    Fetch changed files for a PR (latest iteration)
-    Supports both 'changes' and 'changeEntries' keys
+    Fetch changed files WITH ACTUAL CODE DIFFS for a PR
+    Returns list of dicts: [{'path': str, 'changeType': str, 'diff': str}]
     """
     try:
         org_clean = clean_org_for_api(org)
         base_url = f"https://dev.azure.com/{org_clean}"
 
-        # Get latest iteration
-        iter_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations?api-version=7.1"
-        iter_resp = requests.get(iter_url, auth=("", pat))
-        iter_resp.raise_for_status()
-        iter_data = iter_resp.json()
-        iterations = iter_data.get("value", [])
-        latest_iter = iterations[-1]["id"] if iterations else 1
-
-        # Get changes for that iteration
-        change_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations/{latest_iter}/changes?api-version=7.1"
-        resp = requests.get(change_url, auth=("", pat))
-        resp.raise_for_status()
-        data = resp.json()
-
-        # ✅ handle both response formats
-        entries = data.get("changes") or data.get("changeEntries") or []
+        # Get PR commits to find the source and target commit IDs
+        commits_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/commits?api-version=7.1"
+        commits_resp = requests.get(commits_url, auth=("", pat))
+        
+        if commits_resp.status_code != 200:
+            st.warning(f"Could not fetch commits for PR {pr_id}")
+            return []
+        
+        commits_data = commits_resp.json()
+        commits = commits_data.get("value", [])
+        
+        if not commits:
+            return []
+        
         result = []
-        for c in entries:
-            item = c.get("item", {})
-            path = item.get("path", "")
-            change_type = c.get("changeType", "edit")
-            if path:
-                result.append(f"{change_type.title()}: {path}")
-
-        return result
+        
+        # Get changes for each commit (limit to last 5 commits for performance)
+        for commit in commits[-5:]:
+            commit_id = commit.get("commitId")
+            if not commit_id:
+                continue
+            
+            # Get changes for this commit
+            changes_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/commits/{commit_id}/changes?api-version=7.1"
+            changes_resp = requests.get(changes_url, auth=("", pat))
+            
+            if changes_resp.status_code != 200:
+                continue
+            
+            changes_data = changes_resp.json()
+            changes = changes_data.get("changes", [])
+            
+            for change in changes[:20]:  # Limit to 20 files per commit
+                item = change.get("item", {})
+                path = item.get("path", "")
+                change_type = change.get("changeType", "edit")
+                
+                if not path or change_type.lower() not in ["edit", "add"]:
+                    continue
+                
+                # Try to get file content
+                object_id = item.get("objectId")
+                if object_id:
+                    try:
+                        content_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/blobs/{object_id}?api-version=7.1"
+                        content_resp = requests.get(content_url, auth=("", pat), timeout=5)
+                        
+                        if content_resp.status_code == 200:
+                            content = content_resp.text[:3000]  # Limit to 3000 chars
+                            result.append({
+                                'path': path,
+                                'changeType': change_type,
+                                'diff': content
+                            })
+                        else:
+                            result.append({
+                                'path': path,
+                                'changeType': change_type,
+                                'diff': f"[Content unavailable - Status: {content_resp.status_code}]"
+                            })
+                    except Exception as e:
+                        result.append({
+                            'path': path,
+                            'changeType': change_type,
+                            'diff': f"[Error fetching content: {str(e)[:100]}]"
+                        })
+                else:
+                    result.append({
+                        'path': path,
+                        'changeType': change_type,
+                        'diff': "[No object ID available]"
+                    })
+        
+        return result[:15]  # Return max 15 files
 
     except Exception as e:
         st.warning(f"Failed to fetch PR changes: {e}")
         return []
-
 def generate_pr_test_focus(org: str, project: str, story_id: str, pat: str, story_text: str) -> str:
     """
-    Analyze linked PRs + code changes and generate Smart Testing Focus report using LLM.
+    Analyze linked PRs + ACTUAL CODE CHANGES to identify bugs, breakages, and testing priorities.
+    Performs deep code review to find potential issues.
     """
     try:
+        st.info(f"🔍 Step 1: Fetching linked PRs for story {story_id}...")
         prs = azure_fetch_linked_prs(org, project, story_id, pat)
+        
         if not prs:
             return f"*(No PRs linked to story {story_id})*"
         
+        st.info(f"✅ Found {len(prs)} linked PR(s). Fetching code changes...")
+        
         all_changes = []
-        for pr in prs:
-            repo_id = pr["repoId"]
-            pr_id = pr["prId"]
+        for idx, pr in enumerate(prs, 1):
+            st.info(f"📁 Analyzing PR {idx}/{len(prs)} (ID: {pr['prId']})...")
             pr_changes = azure_fetch_pr_changes(org, pr["projectId"], pr["repoId"], pr["prId"], pat)
-            all_changes.extend(pr_changes)
+            
+            # Debug: Check what we got
+            if pr_changes:
+                st.success(f"  ✓ Retrieved {len(pr_changes)} file changes")
+                all_changes.extend(pr_changes)
+            else:
+                st.warning(f"  ⚠ No changes found for PR {pr['prId']}")
         
         if not all_changes:
             return "*(No changed files detected for linked PRs)*"
         
-        # Limit change list for prompt brevity
-        changes_text = "\n".join(all_changes[:50])
+        st.info(f"📊 Total files to review: {len(all_changes)}")
+        
+        # Build detailed code review context
+        code_review_context = []
+        for idx, change in enumerate(all_changes[:10], 1):  # Limit to 10 files
+            # Ensure we have a dict
+            if not isinstance(change, dict):
+                st.warning(f"⚠️ Change {idx} is not a dict: {type(change)}")
+                continue
+                
+            file_path = change.get('path', 'Unknown')
+            change_type = change.get('changeType', 'edit')
+            diff_content = change.get('diff', '[No diff available]')
+            
+            code_review_context.append(f"""
+### File {idx}: {file_path}
+**Change Type:** {change_type}
+**Code Changes:**
+```
+{diff_content[:3000]}
+```
+""")
+        
+        if not code_review_context:
+            return "*(Could not build code review context - check warnings above)*"
+        
+        changes_text = "\n\n".join(code_review_context)
+        
+        st.info("🤖 Sending to AI for code review analysis...")
         
         prompt = f"""
-You are an expert SDET and test architect.
-Based on the following STORY CONTEXT and CODE CHANGES from linked PRs,
-analyze where the system is most likely to break or any condition/check is missing and what areas need deep testing.
+You are a SENIOR CODE REVIEWER and SDET with 15+ years of experience finding bugs in production code.
 
-STORY CONTEXT:
-{story_text[:1500]}
+**YOUR TASK**: Perform a DEEP CODE REVIEW of the following PR changes and identify:
+1. **CONFIRMED BUGS** - Code defects that WILL break in production
+2. **POTENTIAL BUGS** - Code smells and logic issues that MIGHT break
+3. **MISSING VALIDATIONS** - Scenarios the code doesn't handle
+4. **BREAKING CHANGES** - Changes that will break existing functionality
 
-CODE CHANGES:
+**STORY CONTEXT:**
+{story_text[:1000]}
+
+**CODE CHANGES FROM PR:**
 {changes_text}
 
-Generate your analysis in this format:
-### 🧠 Smart Testing Focus
+**ANALYSIS INSTRUCTIONS:**
+- Review EACH code change line-by-line
+- Look for: null checks, error handling, edge cases, boundary conditions, race conditions, memory leaks
+- Identify logic flaws, off-by-one errors, incorrect operators, missing validations
+- Check for breaking API changes, removed functionality, altered behavior
+- Consider concurrency issues, performance bottlenecks, security vulnerabilities
 
-**High Risk Areas**
-- <short description>
+**OUTPUT FORMAT (be SPECIFIC with file names and line numbers where possible):**
 
-**Potential Break Points**
-- <short description>
+### 🐛 CONFIRMED BUGS (Critical - Will Break)
+1. **[File: filename] Bug Description**
+   - **Code Issue:** Exact problem in the code
+   - **Why It Breaks:** Technical explanation
+   - **Impact:** What will fail in production
+   - **Test Case:** How to reproduce the bug
 
-**Suggested Smart Test Cases**
-- <test case 1>
-- <test case 2>
+### ⚠️ POTENTIAL BUGS (High Risk - Might Break)
+1. **[File: filename] Potential Issue**
+   - **Code Smell:** What looks suspicious
+   - **Scenario:** When it might fail
+   - **Test Case:** How to verify
 
-**Regression Scenarios**
-- <scenario 1>
+### 🚫 MISSING VALIDATIONS
+1. **[File: filename] Missing Check**
+   - **What's Missing:** What validation is absent
+   - **Risk:** What could go wrong
+   - **Test Case:** How to test this gap
+
+### 💥 BREAKING CHANGES
+1. **[File: filename] Breaking Change**
+   - **What Changed:** Before vs After
+   - **Impact:** What existing functionality breaks
+   - **Test Case:** Regression test needed
+
+### 🎯 CRITICAL TEST SCENARIOS
+- Test case 1 (Priority: HIGH)
+- Test case 2 (Priority: HIGH)
+- Test case 3 (Priority: MEDIUM)
+
+**BE SPECIFIC**: Cite exact file names, mention specific code patterns, explain WHY something will break.
+**BE TECHNICAL**: This is for experienced QA engineers who understand code.
 """
+        
         llm = get_llm_instance()
         raw = llm.invoke(prompt)
-        return extract_llm_text(raw)
+        result = extract_llm_text(raw)
+        
+        st.success("✅ AI analysis complete!")
+        return result
+        
     except Exception as e:
-        return f"Error during PR analysis: {e}"
+        import traceback
+        error_details = traceback.format_exc()
+        st.error(f"Error type: {type(e).__name__}")
+        st.error(f"Error message: {str(e)}")
+        return f"❌ Error during PR code review: {e}\n\n```\n{error_details}\n```"
 
 def azure_run_wiql(org: str, project: str, wiql_query: str, pat: str) -> List[str]:
     if not all([org, project, wiql_query, pat]):
