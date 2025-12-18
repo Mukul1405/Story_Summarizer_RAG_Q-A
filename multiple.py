@@ -37,15 +37,54 @@ except Exception:
     openpyxl = None
 
 # LangChain pieces (standard names)
+# Replace the old import block (lines 34-42) with this:
+
+# LangChain pieces (updated imports for newer versions)
 try:
-    from langchain.text_splitter import CharacterTextSplitter
+    # Text splitter - try new location first
+    try:
+        from langchain_text_splitters import CharacterTextSplitter
+    except ImportError:
+        from langchain.text_splitter import CharacterTextSplitter
+    
+    # Embeddings
     from langchain_huggingface import HuggingFaceEmbeddings
+    
+    # Vector store
     from langchain_community.vectorstores import FAISS
-    from langchain.chains import ConversationalRetrievalChain
-    from langchain.memory import ConversationBufferMemory
-    from langchain.docstore.document import Document
+    
+    # Chains - ConversationalRetrievalChain moved to langchain.chains.retrieval
+    try:
+        from langchain.chains import ConversationalRetrievalChain
+    except (ImportError, ModuleNotFoundError):
+        try:
+            from langchain.chains.retrieval import ConversationalRetrievalChain
+        except (ImportError, ModuleNotFoundError):
+            # For langchain >= 1.0, we need to build it manually using LCEL
+            from langchain.chains.conversational_retrieval.base import ConversationalRetrievalChain
+    
+    # Memory
+    try:
+        from langchain.memory import ConversationBufferMemory
+    except ImportError:
+        try:
+            from langchain_community.chat_message_histories import ChatMessageHistory
+            from langchain.memory import ConversationBufferMemory
+        except ImportError:
+            from langchain_core.chat_history import BaseChatMessageHistory
+            from langchain.memory import ConversationBufferMemory
+    
+    # Document
+    try:
+        from langchain.docstore.document import Document
+    except ImportError:
+        try:
+            from langchain_core.documents import Document
+        except ImportError:
+            from langchain_community.docstore.document import Document
+            
 except Exception as e:
-    st.error("Required langchain packages not found. Please install langchain and related packages.")
+    st.error(f"Required langchain packages not found. Please install langchain and related packages.\nError: {e}")
     raise
 
 # Try to import Groq provider (optional)
