@@ -105,6 +105,14 @@ except Exception:
     GROQ_CLIENT_AVAILABLE = False
     Groq = None
 
+MODEL_CONFIG = {
+    "llama-3.3-70b-versatile": {"max_tokens": 8000, "max_input_chars": 6000},
+    "openai/gpt-oss-20b":      {"max_tokens": 4000, "max_input_chars": 4000},
+    "groq/compound":            {"max_tokens": 4000, "max_input_chars": 4000},
+    "qwen/qwen3-32b":           {"max_tokens": 4000, "max_input_chars": 3000},
+}
+DEFAULT_MODEL_CONFIG = {"max_tokens": 4000, "max_input_chars": 4000}
+
 # -------------------------
 # Utility functions
 # -------------------------
@@ -285,224 +293,6 @@ def azure_fetch_linked_prs(org: str, project: str, work_item_id: str, pat: str) 
     except Exception as e:
         st.warning(f"PR fetch failed for {work_item_id}: {e}")
         return []
-# def azure_fetch_pr_changes(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[dict]:
-#     """
-#     Fetch changed files WITH ACTUAL CODE DIFFS for a PR
-#     Returns list of dicts: [{'path': str, 'changeType': str, 'diff': str}]
-#     """
-#     try:
-#         org_clean = clean_org_for_api(org)
-#         base_url = f"https://dev.azure.com/{org_clean}"
-
-#         # Get PR commits to find the source and target commit IDs
-#         commits_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/commits?api-version=7.1"
-#         commits_resp = requests.get(commits_url, auth=("", pat))
-        
-#         if commits_resp.status_code != 200:
-#             st.warning(f"Could not fetch commits for PR {pr_id}")
-#             return []
-        
-#         commits_data = commits_resp.json()
-#         commits = commits_data.get("value", [])
-        
-#         if not commits:
-#             return []
-        
-#         result = []
-        
-#         # Get changes for each commit (limit to last 5 commits for performance)
-#         for commit in commits[-5:]:
-#             commit_id = commit.get("commitId")
-#             if not commit_id:
-#                 continue
-            
-#             # Get changes for this commit
-#             changes_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/commits/{commit_id}/changes?api-version=7.1"
-#             changes_resp = requests.get(changes_url, auth=("", pat))
-            
-#             if changes_resp.status_code != 200:
-#                 continue
-            
-#             changes_data = changes_resp.json()
-#             changes = changes_data.get("changes", [])
-            
-#             for change in changes[:20]:  # Limit to 20 files per commit
-#                 item = change.get("item", {})
-#                 path = item.get("path", "")
-#                 change_type = change.get("changeType", "edit")
-                
-#                 if not path or change_type.lower() not in ["edit", "add"]:
-#                     continue
-                
-#                 # Try to get file content
-#                 object_id = item.get("objectId")
-#                 if object_id:
-#                     try:
-#                         content_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/blobs/{object_id}?api-version=7.1"
-#                         content_resp = requests.get(content_url, auth=("", pat), timeout=5)
-                        
-#                         if content_resp.status_code == 200:
-#                             content = content_resp.text[:3000]  # Limit to 3000 chars
-#                             result.append({
-#                                 'path': path,
-#                                 'changeType': change_type,
-#                                 'diff': content
-#                             })
-#                         else:
-#                             result.append({
-#                                 'path': path,
-#                                 'changeType': change_type,
-#                                 'diff': f"[Content unavailable - Status: {content_resp.status_code}]"
-#                             })
-#                     except Exception as e:
-#                         result.append({
-#                             'path': path,
-#                             'changeType': change_type,
-#                             'diff': f"[Error fetching content: {str(e)[:100]}]"
-#                         })
-#                 else:
-#                     result.append({
-#                         'path': path,
-#                         'changeType': change_type,
-#                         'diff': "[No object ID available]"
-#                     })
-        
-#         return result[:15]  # Return max 15 files
-
-#     except Exception as e:
-#         st.warning(f"Failed to fetch PR changes: {e}")
-#         return []
-# def generate_pr_test_focus(org: str, project: str, story_id: str, pat: str, story_text: str) -> str:
-#     """
-#     Analyze linked PRs + ACTUAL CODE CHANGES to identify bugs, breakages, and testing priorities.
-#     Performs deep code review to find potential issues.
-#     """
-#     try:
-#         st.info(f"🔍 Step 1: Fetching linked PRs for story {story_id}...")
-#         prs = azure_fetch_linked_prs(org, project, story_id, pat)
-        
-#         if not prs:
-#             return f"*(No PRs linked to story {story_id})*"
-        
-#         st.info(f"✅ Found {len(prs)} linked PR(s). Fetching code changes...")
-        
-#         all_changes = []
-#         for idx, pr in enumerate(prs, 1):
-#             st.info(f"📁 Analyzing PR {idx}/{len(prs)} (ID: {pr['prId']})...")
-#             pr_changes = azure_fetch_pr_changes(org, pr["projectId"], pr["repoId"], pr["prId"], pat)
-            
-#             # Debug: Check what we got
-#             if pr_changes:
-#                 st.success(f"  ✓ Retrieved {len(pr_changes)} file changes")
-#                 all_changes.extend(pr_changes)
-#             else:
-#                 st.warning(f"  ⚠ No changes found for PR {pr['prId']}")
-        
-#         if not all_changes:
-#             return "*(No changed files detected for linked PRs)*"
-        
-#         st.info(f"📊 Total files to review: {len(all_changes)}")
-        
-#         # Build detailed code review context
-#         code_review_context = []
-#         for idx, change in enumerate(all_changes[:10], 1):  # Limit to 10 files
-#             # Ensure we have a dict
-#             if not isinstance(change, dict):
-#                 st.warning(f"⚠️ Change {idx} is not a dict: {type(change)}")
-#                 continue
-                
-#             file_path = change.get('path', 'Unknown')
-#             change_type = change.get('changeType', 'edit')
-#             diff_content = change.get('diff', '[No diff available]')
-            
-#             code_review_context.append(f"""
-# ### File {idx}: {file_path}
-# **Change Type:** {change_type}
-# **Code Changes:**
-# ```
-# {diff_content[:3000]}
-# ```
-# """)
-        
-#         if not code_review_context:
-#             return "*(Could not build code review context - check warnings above)*"
-        
-#         changes_text = "\n\n".join(code_review_context)
-        
-#         st.info("🤖 Sending to AI for code review analysis...")
-        
-#         prompt = f"""
-# You are a SENIOR CODE REVIEWER and SDET with 15+ years of experience finding bugs in production code.
-
-# **YOUR TASK**: Perform a DEEP CODE REVIEW of the following PR changes and identify:
-# 1. **CONFIRMED BUGS** - Code defects that WILL break in production
-# 2. **POTENTIAL BUGS** - Code smells and logic issues that MIGHT break
-# 3. **MISSING VALIDATIONS** - Scenarios the code doesn't handle
-# 4. **BREAKING CHANGES** - Changes that will break existing functionality
-
-# **STORY CONTEXT:**
-# {story_text[:1000]}
-
-# **CODE CHANGES FROM PR:**
-# {changes_text}
-
-# **ANALYSIS INSTRUCTIONS:**
-# - Review EACH code change line-by-line
-# - Look for: null checks, error handling, edge cases, boundary conditions, race conditions, memory leaks
-# - Identify logic flaws, off-by-one errors, incorrect operators, missing validations
-# - Check for breaking API changes, removed functionality, altered behavior
-# - Consider concurrency issues, performance bottlenecks, security vulnerabilities
-
-# **OUTPUT FORMAT (be SPECIFIC with file names and line numbers where possible):**
-
-# ### 🐛 CONFIRMED BUGS (Critical - Will Break)
-# 1. **[File: filename] Bug Description**
-#    - **Code Issue:** Exact problem in the code
-#    - **Why It Breaks:** Technical explanation
-#    - **Impact:** What will fail in production
-#    - **Test Case:** How to reproduce the bug
-
-# ### ⚠️ POTENTIAL BUGS (High Risk - Might Break)
-# 1. **[File: filename] Potential Issue**
-#    - **Code Smell:** What looks suspicious
-#    - **Scenario:** When it might fail
-#    - **Test Case:** How to verify
-
-# ### 🚫 MISSING VALIDATIONS
-# 1. **[File: filename] Missing Check**
-#    - **What's Missing:** What validation is absent
-#    - **Risk:** What could go wrong
-#    - **Test Case:** How to test this gap
-
-# ### 💥 BREAKING CHANGES
-# 1. **[File: filename] Breaking Change**
-#    - **What Changed:** Before vs After
-#    - **Impact:** What existing functionality breaks
-#    - **Test Case:** Regression test needed
-
-# ### 🎯 CRITICAL TEST SCENARIOS
-# - Test case 1 (Priority: HIGH)
-# - Test case 2 (Priority: HIGH)
-# - Test case 3 (Priority: MEDIUM)
-
-# **BE SPECIFIC**: Cite exact file names, mention specific code patterns, explain WHY something will break.
-# **BE TECHNICAL**: This is for experienced QA engineers who understand code.
-# """
-        
-#         llm = get_llm_instance()
-#         raw = llm.invoke(prompt)
-#         result = extract_llm_text(raw)
-        
-#         st.success("✅ AI analysis complete!")
-#         return result
-        
-#     except Exception as e:
-#         import traceback
-#         error_details = traceback.format_exc()
-#         st.error(f"Error type: {type(e).__name__}")
-#         st.error(f"Error message: {str(e)}")
-#         return f"❌ Error during PR code review: {e}\n\n```\n{error_details}\n```"
-
 
 def azure_fetch_pr_file_diffs(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[dict]:
     """
@@ -988,39 +778,131 @@ def strict_split(text, chunk_size=1000, chunk_overlap=200):
 
 def generate_flow_diagram(title_text_pairs: List[Tuple[str, str]]) -> str:
     """
-    Generate a Mermaid flow diagram using LLM to analyze story relationships
+    Generate intelligent flow diagram for ANY type of story
     """
     try:
         llm = get_llm_instance()
         
-        # Prepare content for LLM analysis - limit content length
-        stories_text = "\n\n".join([
-            f"Story {idx+1}: {title}\nContent: {text[:1000]}"
-            for idx, (title, text) in enumerate(title_text_pairs[:10])  # Limit to 10 stories
-        ])
+        # Prepare comprehensive story content
+        all_text = ""
+        for idx, (title, text) in enumerate(title_text_pairs[:8], 1):
+            clean_title = title.replace('WorkItem-', '').replace('_', ' ')
+            all_text += f"\n\n=== Story {idx}: {clean_title} ===\n{text[:1200]}"
         
-        prompt = f"""Analyze the following user stories and create a Mermaid flowchart diagram showing their relationships and workflow.
+        # Universal intelligent prompt
+        prompt = f"""You are an expert business analyst creating a technical flow diagram. Read 
+            the user stories below and create a Mermaid flowchart that accurately represents 
+            the ACTUAL LOGIC AND WORKFLOW described.
 
-CRITICAL RULES:
-1. Use ONLY these node types:
-   - Rectangle: A[Text Here]
-   - Rounded: A([Text Here])
-   - Diamond: A{{{{Text Here}}}}  (use DOUBLE curly braces)
-2. Keep node text SHORT (max 6 words)
-3. Use SIMPLE arrow syntax: A --> B
-4. Do NOT use special characters: ? : ; # & " in node text
-5. Start with: graph LR
-6. Output ONLY the Mermaid code, no explanations
+            **USER STORIES:**
+            {all_text}
 
-STORIES:
-{stories_text}
+            **YOUR TASK:**
+            Carefully analyze the content above and extract:
+            1. What are the ACTUAL steps/processes mentioned?
+            2. What are the DECISION points (if/else, conditions, checks)?
+            3. What are the DIFFERENT SCENARIOS or paths?
+            4. What gets CREATED, SAVED, or PROCESSED differently in each case?
+            5. Are there CONFIG checks, FLAG settings, or VALIDATION rules?
 
-Generate Mermaid flowchart (graph LR format):"""
+            **CRITICAL INSTRUCTIONS:**
+
+            1. **READ THE CONTENT CAREFULLY** - Don't assume generic flows
+            - Extract EXACT scenarios mentioned (don't invent)
+            - Use ACTUAL terminology from the stories
+            - Show REAL decision points, not generic ones
+
+            2. **Identify the Flow Type:**
+            - If stories mention configs/flags/settings → Show config checks and conditional behavior
+            - If stories mention user actions/screens → Show user workflow
+            - If stories mention API/data/processing → Show data flow
+            - If stories mention different modes/types → Show branching for each
+
+            3. **Mermaid Syntax (STRICTLY FOLLOW):**
+            - Start with: graph TD
+            - Decisions: NodeName{{Question?}} (single braces!)
+            - Steps: NodeName[Action Description]
+            - Start/End: Start([Begin]) and End([Complete])
+            - Conditional arrows: Node -->|Label| NextNode
+            - Keep labels under 50 characters
+            - NO special characters in node text: avoid : ; # & "
+
+            4. **Extract from Stories:**
+            - Look for "As Is" vs "To Be" → Show both flows or just "To Be"
+            - Look for "if/when/based on" → These are decision points
+            - Look for "depending on" → These are branches
+            - Look for "should/will/must" → These are required steps
+            - Look for specific scenarios (Mode A, Mode B, Type X, Type Y)
+
+            5. **Quality Checks:**
+            - Does your diagram reflect what's ACTUALLY in the stories?
+            - Have you included ALL mentioned scenarios?
+            - Are decision points based on REAL conditions from the story?
+            - Do different paths show DIFFERENT outcomes mentioned?
+
+            **EXAMPLE 1 - Config-Based Logic:**
+            ```
+            graph TD
+                Start([Start])
+                Start --> Check{{Mode Type?}}
+                Check -->|Type A| ConfigA[Check Config A]
+                ConfigA --> DefaultA[Set Default Values]
+                DefaultA --> SaveA[Save Type A]
+                Check -->|Type B| ConfigB[Check Config B]
+                ConfigB --> SpecialB[Apply Special Logic]
+                SpecialB --> SaveB[Save Type B Differently]
+                SaveA --> End([Complete])
+                SaveB --> End
+            ```
+
+            **EXAMPLE 2 - User Workflow:**
+            ```
+            graph TD
+                Start([User Opens Screen])
+                Start --> Input[Enter Data]
+                Input --> Validate{{Valid?}}
+                Validate -->|Yes| Process[Process Request]
+                Validate -->|No| Error[Show Error]
+                Error --> Input
+                Process --> Confirm{{Confirmed?}}
+                Confirm -->|Yes| Save[Save Data]
+                Confirm -->|No| Cancel[Cancel]
+                Save --> End([Complete])
+                Cancel --> End
+            ```
+
+            **EXAMPLE 3 - Multi-Scenario:**
+            ```
+            graph TD
+                Start([Begin])
+                Start --> SelectType{{Select Type?}}
+                SelectType -->|Scenario 1| Path1[Process Scenario 1]
+                Path1 --> Action1[Specific Action 1]
+                SelectType -->|Scenario 2| Path2[Process Scenario 2]
+                Path2 --> Check2{{Condition?}}
+                Check2 -->|Yes| Action2A[Action 2A]
+                Check2 -->|No| Action2B[Action 2B]
+                SelectType -->|Scenario 3| Path3[Process Scenario 3]
+                Path3 --> Action3[Specific Action 3]
+                Action1 --> End([Complete])
+                Action2A --> End
+                Action2B --> End
+                Action3 --> End
+            ```
+
+            **OUTPUT REQUIREMENTS:**
+            - Create a diagram that MATCHES the actual story content
+            - Use REAL terminology from the stories
+            - Show ALL scenarios/modes/types mentioned
+            - Include ACTUAL decision points from the stories
+            - Output ONLY the Mermaid code, no explanations
+            - Start with graph TD
+"""
 
         result = llm.invoke(prompt)
         mermaid_code = extract_llm_text(result)
         
-        # Clean up the response
+        # Clean up response
         mermaid_code = mermaid_code.strip()
         mermaid_code = re.sub(r'^```mermaid\s*', '', mermaid_code)
         mermaid_code = re.sub(r'^```\s*', '', mermaid_code)
@@ -1029,36 +911,131 @@ Generate Mermaid flowchart (graph LR format):"""
         
         # Ensure it starts with graph
         if not mermaid_code.startswith('graph'):
-            mermaid_code = 'graph LR\n' + mermaid_code
+            mermaid_code = 'graph TD\n' + mermaid_code
+        
+        # Minimal safe cleanup
+        mermaid_code = safe_clean_mermaid(mermaid_code)
+        
+        # Validate the diagram has meaningful content
+        line_count = mermaid_code.count('\n')
+        node_count = mermaid_code.count('[') + mermaid_code.count('{')
+        
+        if line_count < 5 or node_count < 3:
+            st.warning("Generated diagram seems too simple, using content-based fallback")
+            return generate_content_based_fallback(title_text_pairs)
         
         return mermaid_code
-    
     except Exception as e:
-        # Fallback: Create a simple diagram if LLM fails
-        st.warning(f"Using fallback diagram (LLM error: {str(e)[:100]})")
+        st.warning(f"LLM generation failed: {str(e)[:100]}")
+        return generate_content_based_fallback(title_text_pairs)
+
+def safe_clean_mermaid(code: str) -> str:
+    """
+    Minimal safe cleanup - only fix obvious issues
+    """
+    # Remove dangerous characters from labels only (inside brackets)
+    def clean_bracket_content(match):
+        content = match.group(1)
+        # Remove only truly problematic chars
+        content = content.replace('"', '').replace("'", '')
+        content = content.replace(':', '').replace(';', '')
+        content = content[:50]  # Limit length
+        return f'[{content}]'
+    
+    # Clean rectangular brackets
+    code = re.sub(r'\[([^\]]+)\]', clean_bracket_content, code)
+    
+    # Clean rounded brackets  
+    def clean_paren_content(match):
+        content = match.group(1)
+        content = content.replace('"', '').replace("'", '')
+        content = content[:30]
+        return f'([{content}])'
+    
+    code = re.sub(r'\(\[([^\]]+)\]\)', clean_paren_content, code)
+    
+    return code
+
+
+def generate_content_based_fallback(title_text_pairs: List[Tuple[str, str]]) -> str:
+    """
+    Intelligent fallback that analyzes actual content patterns
+    """
+    all_text = " ".join([text.lower() for _, text in title_text_pairs])
+    
+    # Extract decision points from content
+    decision_indicators = re.findall(r'(?:if|when|based on|depending on)\s+([^,.\n]{10,60})', all_text)
+    
+    # Extract scenarios/modes/types
+    scenario_patterns = [
+        r'(air|sea|road|rail|fcl|lcl|ftl|ltl)',
+        r'(type\s+\w+|mode\s+\w+|scenario\s+\w+)',
+        r'(option\s+\w+|category\s+\w+)'
+    ]
+    
+    scenarios = set()
+    for pattern in scenario_patterns:
+        matches = re.findall(pattern, all_text, re.IGNORECASE)
+        scenarios.update([m.strip().title() for m in matches if m.strip()])
+    
+    # Extract actions (verbs)
+    action_patterns = r'(?:should|will|must|to)\s+(create|save|update|delete|check|validate|process|calculate|generate|display|send|receive)\s+([^,.\n]{5,40})'
+    actions = re.findall(action_patterns, all_text)
+    
+    # Build diagram based on extracted patterns
+    code = "graph TD\n"
+    code += "    Start([Begin Process])\n"
+    
+    if scenarios:
+        # Has multiple scenarios - create branching
+        code += "    Start --> Select{Choose Option}\n"
         
-        mermaid_code = "graph LR\n"
-        mermaid_code += "    Start([Start])\n"
-        
-        # Limit to 8 stories
-        for idx, (title, _) in enumerate(title_text_pairs[:8]):
-            clean_title = title.replace('-', ' ').replace('_', ' ')[:40]
-            clean_title = re.sub(r'[^\w\s]', '', clean_title)
-            clean_title = ' '.join(clean_title.split())
+        for idx, scenario in enumerate(list(scenarios)[:5], 1):  # Max 5 scenarios
+            scenario_clean = scenario.replace(' ', '')[:20]
+            code += f"    Select -->|{scenario}| S{idx}Process\n"
+            code += f"    S{idx}Process[Process {scenario}]\n"
             
-            node_id = f"S{idx+1}"
-            mermaid_code += f"    {node_id}[\"{clean_title}\"]\n"
-            
-            if idx == 0:
-                mermaid_code += f"    Start --> {node_id}\n"
+            # Add actions if found
+            if actions and idx <= len(actions):
+                verb, obj = actions[idx-1]
+                code += f"    S{idx}Process --> S{idx}Action[{verb.title()} {obj[:30]}]\n"
+                code += f"    S{idx}Action --> End\n"
             else:
-                mermaid_code += f"    S{idx} --> {node_id}\n"
-        
-        last_node = f"S{min(len(title_text_pairs), 8)}"
-        mermaid_code += f"    End([Complete])\n"
-        mermaid_code += f"    {last_node} --> End\n"
-        
-        return mermaid_code
+                code += f"    S{idx}Process --> End\n"
+    
+    elif decision_indicators:
+        # Has decisions - create conditional flow
+        prev = "Start"
+        for idx, decision in enumerate(decision_indicators[:3], 1):
+            decision_clean = decision.strip()[:40]
+            code += f"    {prev} --> D{idx}{{{decision_clean}?}}\n"
+            code += f"    D{idx} -->|Yes| A{idx}Yes[Process Yes Path]\n"
+            code += f"    D{idx} -->|No| A{idx}No[Process No Path]\n"
+            code += f"    A{idx}Yes --> End\n"
+            code += f"    A{idx}No --> End\n"
+            prev = f"D{idx}"
+            break  # Just show first decision
+    
+    elif actions:
+        # Has actions - create linear flow
+        prev = "Start"
+        for idx, (verb, obj) in enumerate(actions[:5], 1):
+            code += f"    {prev} --> A{idx}[{verb.title()} {obj[:30]}]\n"
+            prev = f"A{idx}"
+        code += f"    {prev} --> End\n"
+    
+    else:
+        # Generic fallback
+        code += "    Start --> Process[Process Request]\n"
+        code += "    Process --> Validate{{Valid?}}\n"
+        code += "    Validate -->|Yes| Complete[Complete]\n"
+        code += "    Validate -->|No| Error[Handle Error]\n"
+        code += "    Error --> Process\n"
+        code += "    Complete --> End\n"
+    
+    code += "    End([Complete])\n"
+    
+    return code
 
 # -------------------------
 # TEST CASE GENERATION FUNCTIONS
@@ -1082,34 +1059,38 @@ def sanitize_groq_output(text: str) -> str:
 
     return text
 
-def make_groq_test_prompt(title: str, description: str, acceptance_criteria: str) -> str:
+def make_groq_test_prompt(title: str, description: str, 
+                          acceptance_criteria: str, model: str = "") -> str:
+    cfg = MODEL_CONFIG.get(model, DEFAULT_MODEL_CONFIG)
+    max_chars = cfg["max_input_chars"]
+
+    # Truncate inputs to stay within token budget
+    desc_truncated = description[:max_chars]
+    ac_truncated = acceptance_criteria[:max_chars // 2]
+
     prompt = f"""
-You are a senior test-design engineer. For the user story below, produce a highly comprehensive, structured list of test cases.
+You are a senior test-design engineer. For the user story below, produce a structured list of test cases.
 Your output MUST be valid JSON (an array of objects). Each object should have:
   - test_case_id
   - priority (High/Medium/Low)
   - test_case (short title)
   - precondition
-  - test_steps (ordered list of steps as an array)
+  - test_steps (array of strings)
   - expected_result
 
-User Story Title:
-{title}
+User Story Title: {title}
 
 Description:
-{description}
+{desc_truncated}
 
 Acceptance Criteria:
-{acceptance_criteria}
+{ac_truncated}
 
 RULES:
-1. Generate complete set of test cases ranging(30-100 cases), covering all realistic, edge, boundary, integration, negative, performance, usability, security, accessibility, and error handling scenarios based on the story and typical project risks.
-2. Go beyond acceptance criteria: include positive, negative, boundary value, data validation, regression, integration, compatibility, performance, security, usability, and accessibility test cases.
-3. Assign priority based on risk, business value, and acceptance criteria.
-4. Each expected_result must be 1–2 sentences, concise yet clear.
-5. Ensure deep coverage so that even if acceptance criteria are limited, cases extrapolate all flows, error paths, user types, devices, and data inputs that might reasonably affect quality or outcomes.
-6. If relevant, suggest test cases for workflows across modules and for special user profiles or edge hardware/software settings.
-7. Return only the JSON array, no extra commentary.
+1. Generate 20-40 test cases covering positive, negative, edge, boundary, and integration scenarios.
+2. Assign priority based on risk and business value.
+3. Each expected_result must be 1-2 sentences.
+4. Return ONLY the JSON array, no extra commentary.
 """
     return prompt.strip()
 
@@ -1117,12 +1098,14 @@ def call_groq_for_tests(prompt: str, api_key: str, model: str = "llama-3.3-70b-v
     if not GROQ_CLIENT_AVAILABLE:
         raise RuntimeError("Groq client not available. Install: pip install groq")
     
+    cfg = MODEL_CONFIG.get(model, DEFAULT_MODEL_CONFIG)
+    safe_max_tokens = cfg["max_tokens"]
     client = Groq(api_key=api_key)
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
-        max_tokens=32768,
+        max_tokens=safe_max_tokens,
         timeout=timeout,
     )
     text = response.choices[0].message.content.strip()
@@ -1144,8 +1127,7 @@ def call_groq_for_tests(prompt: str, api_key: str, model: str = "llama-3.3-70b-v
 def story_to_testcases(title: str, description_html: str, acceptance_html: str, groq_api_key: str, model: str):
     desc_text = strip_html_to_text(description_html)
     ac_text = strip_html_to_text(acceptance_html)
-
-    prompt = make_groq_test_prompt(title, desc_text, ac_text)
+    prompt = make_groq_test_prompt(title, desc_text, ac_text, model)  # ← pass model
     ai_results = call_groq_for_tests(prompt, api_key=groq_api_key, model=model)
 
     rows = []
@@ -1443,18 +1425,38 @@ CONTENT END
             status.error(f"Failed: {e}")
 
     # Flow Diagram Section
+    # Find this section in your code (around line 1050-1150) and REPLACE it:
+
+# Flow Diagram Section
     if st.session_state.get("flow_diagram"):
         st.markdown("---")
-        st.header("📊 Visual Flow Diagram")
         
-        if st.button("🔄 Regenerate", key="regen_btn"):
-            if st.session_state.get("story_data"):
-                try:
-                    flow_diagram = generate_flow_diagram(st.session_state["story_data"])
-                    st.session_state["flow_diagram"] = flow_diagram
+        # Header with expand button
+        col_header1, col_header2, col_header3 = st.columns([3, 1, 1])
+        with col_header1:
+            st.header("📊 Visual Flow Diagram")
+        with col_header2:
+            if st.button("🔄 Regenerate", key="regen_btn"):
+                if st.session_state.get("story_data"):
+                    try:
+                        flow_diagram = generate_flow_diagram(st.session_state["story_data"])
+                        st.session_state["flow_diagram"] = flow_diagram
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+        with col_header3:
+            # Toggle fullscreen mode
+            if "diagram_fullscreen" not in st.session_state:
+                st.session_state["diagram_fullscreen"] = False
+            
+            if st.session_state["diagram_fullscreen"]:
+                if st.button("🗙 Exit Fullscreen", key="exit_fullscreen_btn", type="primary"):
+                    st.session_state["diagram_fullscreen"] = False
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Failed: {e}")
+            else:
+                if st.button("⛶ Fullscreen", key="fullscreen_btn"):
+                    st.session_state["diagram_fullscreen"] = True
+                    st.rerun()
         
         diagram_code = st.session_state["flow_diagram"]
         
@@ -1468,26 +1470,50 @@ CONTENT END
         diagram_code = re.sub(r'```.*?```', '', diagram_code, flags=re.DOTALL)
         diagram_code = diagram_code.strip()
         
+        # Determine height based on fullscreen mode
+        diagram_height = 1200 if st.session_state.get("diagram_fullscreen") else 500
+        
         # Create tabs
         tab1, tab2 = st.tabs(["🎯 Visual Diagram", "📝 Code"])
         
         with tab1:
-            # Render using Mermaid.js
+            if st.session_state.get("diagram_fullscreen"):
+                st.info("💡 Fullscreen mode active - Scroll down to see the complete diagram. Click 'Exit Fullscreen' above to return.")
+            
+            # Render using Mermaid.js with dynamic height
             mermaid_html = f"""
             <!DOCTYPE html>
             <html>
             <head>
                 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
                 <script>
-                    mermaid.initialize({{ startOnLoad: true, theme: 'default' }});
+                    mermaid.initialize({{ 
+                        startOnLoad: true, 
+                        theme: 'default',
+                        flowchart: {{
+                            useMaxWidth: true,
+                            htmlLabels: true,
+                            curve: 'basis'
+                        }}
+                    }});
                 </script>
                 <style>
                     body {{ 
                         font-family: Arial, sans-serif;
                         margin: 20px;
                         background: white;
+                        overflow: auto;
                     }}
-                    .mermaid {{ text-align: center; }}
+                    .mermaid {{ 
+                        text-align: center;
+                        width: 100%;
+                        height: auto;
+                        min-height: {diagram_height - 100}px;
+                    }}
+                    svg {{
+                        max-width: 100%;
+                        height: auto;
+                    }}
                 </style>
             </head>
             <body>
@@ -1499,17 +1525,93 @@ CONTENT END
             """
             
             import streamlit.components.v1 as components
-            components.html(mermaid_html, height=500, scrolling=True)
+            components.html(mermaid_html, height=diagram_height, scrolling=True)
         
         with tab2:
             st.code(diagram_code, language="mermaid")
-            st.download_button(
-                label="💾 Download Mermaid Code",
-                data=diagram_code,
-                file_name="flow_diagram.mmd",
-                mime="text/plain",
-                key="download_btn"
-            )
+            
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                st.download_button(
+                    label="💾 Download Mermaid Code",
+                    data=diagram_code,
+                    file_name="flow_diagram.mmd",
+                    mime="text/plain",
+                    key="download_btn"
+                )
+            with col_dl2:
+                # Option to download as image (via link to mermaid.live)
+                import urllib.parse
+                encoded_diagram = urllib.parse.quote(diagram_code)
+                mermaid_live_url = f"https://mermaid.live/edit#pako:{encoded_diagram}"
+                st.markdown(f"[🖼️ Open in Mermaid Live Editor]({mermaid_live_url})")
+    # if st.session_state.get("flow_diagram"):
+    #     st.markdown("---")
+    #     st.header("📊 Visual Flow Diagram")
+        
+    #     if st.button("🔄 Regenerate", key="regen_btn"):
+    #         if st.session_state.get("story_data"):
+    #             try:
+    #                 flow_diagram = generate_flow_diagram(st.session_state["story_data"])
+    #                 st.session_state["flow_diagram"] = flow_diagram
+    #                 st.rerun()
+    #             except Exception as e:
+    #                 st.error(f"Failed: {e}")
+        
+    #     diagram_code = st.session_state["flow_diagram"]
+        
+    #     # Clean diagram code
+    #     if "content='" in diagram_code:
+    #         match = re.search(r'(graph\s+\w+.*?)(?=\'|$)', diagram_code, re.DOTALL)
+    #         if match:
+    #             diagram_code = match.group(1)
+        
+    #     diagram_code = diagram_code.replace('\\n', '\n')
+    #     diagram_code = re.sub(r'```.*?```', '', diagram_code, flags=re.DOTALL)
+    #     diagram_code = diagram_code.strip()
+        
+    #     # Create tabs
+    #     tab1, tab2 = st.tabs(["🎯 Visual Diagram", "📝 Code"])
+        
+    #     with tab1:
+    #         # Render using Mermaid.js
+    #         mermaid_html = f"""
+    #         <!DOCTYPE html>
+    #         <html>
+    #         <head>
+    #             <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    #             <script>
+    #                 mermaid.initialize({{ startOnLoad: true, theme: 'default' }});
+    #             </script>
+    #             <style>
+    #                 body {{ 
+    #                     font-family: Arial, sans-serif;
+    #                     margin: 20px;
+    #                     background: white;
+    #                 }}
+    #                 .mermaid {{ text-align: center; }}
+    #             </style>
+    #         </head>
+    #         <body>
+    #             <div class="mermaid">
+    # {diagram_code}
+    #             </div>
+    #         </body>
+    #         </html>
+    #         """
+            
+    #         import streamlit.components.v1 as components
+    #         components.html(mermaid_html, height=500, scrolling=True)
+        
+    #     with tab2:
+    #         st.code(diagram_code, language="mermaid")
+    #         st.download_button(
+    #             label="💾 Download Mermaid Code",
+    #             data=diagram_code,
+    #             file_name="flow_diagram.mmd",
+    #             mime="text/plain",
+    #             key="download_btn"
+    #         )
 
     # Layman Summary
     st.markdown("---")
@@ -1638,9 +1740,10 @@ with main_tab2:
     
     with col2:
         st.markdown("### Settings")
+        
         test_model = st.selectbox(
             "AI Model",
-            ["llama-3.3-70b-versatile", "openai/gpt-oss-20b", "groq/compound"],
+            ["llama-3.3-70b-versatile", "openai/gpt-oss-20b", "groq/compound","qwen/qwen3-32b"],
             key="test_model"
         )
         generate_test_btn = st.button("🚀 Generate Test Cases", type="primary")
