@@ -20,5 +20,5 @@
 3. Now save the file
 
 ## Run the code
-streamlit run multiple.py
+streamlit run main_NCS.py
 
