@@ -1,19 +1,100 @@
-# Story Summarizer & Q&A — Multi-Source
+# Story Summarizer & QA Assistant — Multi-Source
 
-An AI-powered tool that ingests stories and pages from **Azure DevOps**, **Jira**, or **Confluence**, summarizes them, enables Q&A over the content, generates visual flow diagrams, and produces comprehensive Excel test cases — all in a Streamlit UI.
+> **Stop reading 50-page backlogs. Get AI summaries, instant Q&A, and ready-to-use test cases — in under a minute.**
+
+Works with **Azure DevOps**, **Jira**, and **Confluence**. No copy-paste. No manual effort.
 
 ---
 
-## Features
+## The Problem
 
-- **Multi-source ingestion** — Azure DevOps work items, Jira issues, or Confluence pages
-- **Query language support** — WIQL (Azure DevOps), JQL (Jira), CQL (Confluence)
-- **File upload fallback** — PDF, DOCX, TXT, Markdown
-- **RAG-based Q&A** — Ask questions over ingested content using FAISS + HuggingFace embeddings
-- **AI summarization** — Structured summaries with P0 scenarios, acceptance criteria, and comment insights
-- **Flow diagram generation** — Mermaid.js visual diagrams of item relationships
-- **Test case generation** — 30–100 AI-generated test cases per item exported to Excel
-- **PR analysis** (Azure DevOps only) — Smart testing focus based on linked pull request diffs
+Every sprint, QA engineers and BAs waste hours doing the same things:
+
+- Reading through long, scattered user stories and acceptance criteria
+- Digging through comments to find key decisions buried in threads
+- Writing test cases from scratch for stories they barely understand
+- Asking devs "what does this story actually mean?" — repeatedly
+
+This is not the job. This is the overhead before the job.
+
+---
+
+## The Solution
+
+Paste your story IDs (or run a query). In under 60 seconds you get:
+
+- A clean, structured **AI summary** of every story
+- **P0 scenarios** and acceptance criteria pulled out automatically
+- A **visual flow diagram** showing how stories relate
+- A **Q&A chatbot** you can ask anything — "what's the edge case here?" "what did the dev say about the auth flow?"
+- A downloadable **Excel sheet with 30–100 test cases** per story — covering positive, negative, edge, security, accessibility, and integration scenarios
+
+---
+
+## Demo
+
+> **Add screenshots here before sharing with buyers.**
+>
+> Recommended shots:
+> 1. Sidebar with source selector (Azure DevOps / Jira / Confluence)
+> 2. The AI summary output for a real story
+> 3. The Q&A chat answering a question
+> 4. The generated Excel test cases
+>
+> Run the app (`streamlit run main_NCS.py`), open `http://localhost:8501`, and screenshot with your tool.
+> Drop images into a `/docs/screenshots/` folder and replace this section with:
+> `![Summary View](docs/screenshots/summary.png)`
+
+---
+
+## Key Features
+
+### Multi-Source Ingestion
+Connect directly to **Azure DevOps**, **Jira**, or **Confluence** — no export, no copy-paste. Fetch stories by ID, run a saved query (WIQL / JQL / CQL), or upload files (PDF, DOCX, TXT).
+
+### AI Summarization That Actually Makes Sense
+Not a word-for-word dump. The AI extracts what matters: the objective, the P0 scenarios, the acceptance criteria, and insights from dev/QA comments — formatted cleanly in Markdown.
+
+### Ask Anything — Contextual Q&A
+Once stories are loaded, ask questions in plain English. "What's the rollback plan?" "Which stories touch the payment module?" "What edge cases did the team discuss?" The chatbot searches across all ingested content.
+
+### Flow Diagram Generation
+Automatically generates a Mermaid.js diagram showing how your stories connect and flow — useful for sprint planning, demo prep, and onboarding.
+
+### Test Case Generator (Excel Export)
+Select stories, click generate. The AI produces 30–100 structured test cases per story covering:
+- Positive & negative flows
+- Boundary and edge cases
+- Integration scenarios
+- Security, accessibility, and compatibility checks
+
+Each story gets its own Excel sheet, formatted with test steps as numbered lines.
+
+### PR Impact Analysis *(Azure DevOps)*
+Fetches linked pull requests and analyzes changed files to surface high-risk areas and suggest testing priorities — without sending source code to any external AI.
+
+---
+
+## Who Is This For?
+
+| Role | How they use it |
+|------|----------------|
+| **QA Engineers** | Generate test cases, understand stories fast, find edge cases |
+| **Business Analysts** | Summarize backlogs, prep for sprint reviews, answer stakeholder questions |
+| **Test Managers** | Get sprint-level test coverage in minutes, export to Excel |
+| **Developers** | Quickly understand what a story expects without reading the whole thread |
+
+---
+
+## How It Works
+
+```
+1. Select source  →  Azure DevOps / Jira / Confluence
+2. Enter credentials + story IDs (or a query)
+3. Click "Fetch / Embed & Summarize"
+```
+
+That's it. Summarization, diagram, and Q&A are ready instantly.
 
 ---
 
@@ -29,109 +110,78 @@ pip install -r requirements.txt
 
 ### 2. Create a `.env` file
 
-Create a file named exactly `.env` in the project root and fill in the credentials for the source(s) you plan to use.
-
 ```env
 # ── Shared ──────────────────────────────────────────
 GROQ_API_KEY=your_groq_api_key
 HF_TOKEN=your_huggingface_token
-model=llama-3.3-70b-versatile       # LLM model name passed to Groq
+model=llama-3.3-70b-versatile
 
-# ── Azure DevOps (if using Azure DevOps source) ─────
-AZURE_DEVOPS_ORG=yourorg            # e.g. dpwhotfsonline
-AZURE_DEVOPS_PROJECT=YOURPROJECT    # e.g. DTLP
-AZURE_DEVOPS_PAT=your_pat           # needs Work Items (Read) permission
+# ── Azure DevOps ─────────────────────────────────────
+AZURE_DEVOPS_ORG=yourorg
+AZURE_DEVOPS_PROJECT=YOURPROJECT
+AZURE_DEVOPS_PAT=your_pat
 
-# ── Jira (if using Jira source) ─────────────────────
+# ── Jira ─────────────────────────────────────────────
 JIRA_BASE_URL=https://yourcompany.atlassian.net
 JIRA_EMAIL=you@yourcompany.com
-JIRA_PAT=your_jira_api_token        # generate at id.atlassian.com/manage-profile/security/api-tokens
-JIRA_PROJECT=PROJ                   # optional default project key
-JIRA_VERIFY=true                    # set to false for self-hosted with self-signed certs
+JIRA_PAT=your_jira_api_token
+JIRA_VERIFY=true
 
-# ── Confluence (if using Confluence source) ─────────
+# ── Confluence ───────────────────────────────────────
 CONFLUENCE_BASE_URL=https://yourcompany.atlassian.net
 CONFLUENCE_EMAIL=you@yourcompany.com
 CONFLUENCE_TOKEN=your_confluence_api_token
-CONFLUENCE_SPACE=ENG                # optional default space key
 ```
 
-> **Tip:** Jira and Confluence share the same Atlassian domain and API token, so `JIRA_BASE_URL` / `JIRA_PAT` are reused for Confluence if the Confluence-specific vars are not set.
+> Jira and Confluence share the same Atlassian domain and API token.
 
-### 3. Run the app
+### 3. Run
 
 ```bash
 streamlit run main_NCS.py
 ```
 
----
-
-## Usage
-
-### Selecting a data source
-
-Use the **Data Source** dropdown at the top of the sidebar to switch between Azure DevOps, Jira, and Confluence. The credential fields and input modes update automatically.
-
-### Tab 1 — Summarizer & Q&A
-
-| Data Source | Input modes | Query language |
-|-------------|-------------|---------------|
-| Azure DevOps | Work Item IDs, WIQL Query, Upload files | WIQL |
-| Jira | Issue Keys (e.g. `PROJ-123`), JQL Query, Upload files | JQL |
-| Confluence | Page IDs, CQL Query, Upload files | CQL |
-
-1. Fill in credentials in the sidebar.
-2. Choose an input mode and enter IDs / a query, or upload files.
-3. Click **Fetch / Embed & Summarize**.
-4. View the AI summary, flow diagram, and use the Q&A chat below.
-
-**PR Analysis** (Azure DevOps only): select a story and click *Analyze Linked PRs* to get a smart testing focus report based on the code changes in linked pull requests.
-
-### Tab 2 — Test Case Generator
-
-1. Select the same data source and input mode.
-2. Choose an AI model (default: `llama-3.3-70b-versatile`).
-3. Click **Generate Test Cases**.
-4. Download the Excel file — each item gets its own sheet with 30–100 test cases covering:
-   - Positive & negative scenarios
-   - Edge cases and boundary values
-   - Integration, security, accessibility, and compatibility scenarios
+Open **http://localhost:8501**
 
 ---
 
-## Environment variables reference
+## Supported Sources & Query Languages
 
-| Variable | Required for | Description |
-|----------|-------------|-------------|
-| `GROQ_API_KEY` | All | Groq API key for LLM inference |
-| `HF_TOKEN` | All | HuggingFace token for embedding model |
-| `model` | All | Groq model name (default: `llama-3.3-70b-versatile`) |
-| `AZURE_DEVOPS_ORG` | Azure DevOps | Organization name or URL |
-| `AZURE_DEVOPS_PROJECT` | Azure DevOps | Project name |
-| `AZURE_DEVOPS_PAT` | Azure DevOps | Personal Access Token |
-| `JIRA_BASE_URL` | Jira | e.g. `https://company.atlassian.net` |
-| `JIRA_EMAIL` | Jira | Atlassian account email |
-| `JIRA_PAT` | Jira | Atlassian API token |
-| `JIRA_PROJECT` | Jira (optional) | Default project key |
-| `JIRA_VERIFY` | Jira (optional) | `false` to skip SSL verification |
-| `CONFLUENCE_BASE_URL` | Confluence | e.g. `https://company.atlassian.net` |
-| `CONFLUENCE_EMAIL` | Confluence | Atlassian account email |
-| `CONFLUENCE_TOKEN` | Confluence | Atlassian API token |
-| `CONFLUENCE_SPACE` | Confluence (optional) | Default space key |
+| Source | Fetch by | Query language | Example |
+|--------|----------|---------------|---------|
+| Azure DevOps | Work Item IDs | WIQL | `SELECT [System.Id] FROM WorkItems WHERE ...` |
+| Jira | Issue Keys | JQL | `project = PROJ AND issuetype = Story` |
+| Confluence | Page IDs | CQL | `space = "ENG" AND type = page` |
 
 ---
 
-## Dependencies
+## Tech Stack
 
-Key packages (see `requirements.txt` for pinned versions):
+| Layer | Technology |
+|-------|-----------|
+| UI | Streamlit |
+| LLM | Groq (`llama-3.3-70b-versatile`) |
+| Embeddings | HuggingFace `all-MiniLM-L6-v2` (local, no API cost) |
+| Vector Store | FAISS (in-memory) |
+| Excel Export | pandas + openpyxl |
+| Source APIs | Azure DevOps REST API, Jira REST API v3, Confluence REST API |
 
-- `streamlit` — UI framework
-- `langchain`, `langchain-groq`, `langchain-huggingface`, `langchain-community` — LLM orchestration
-- `faiss-cpu` — vector store for RAG
-- `sentence-transformers` — local embeddings (`all-MiniLM-L6-v2`)
-- `groq` — Groq client for test case generation
-- `beautifulsoup4` — HTML stripping (Azure DevOps / Confluence content)
-- `pandas`, `openpyxl` — Excel export
-- `python-docx`, `PyPDF2` — file upload parsing
-- `python-dotenv` — `.env` loading
-- `requests` — API calls to all three platforms
+---
+
+## Environment Variables
+
+| Variable | Source | Required |
+|----------|--------|----------|
+| `GROQ_API_KEY` | All | Yes |
+| `HF_TOKEN` | All | Yes |
+| `model` | All | No (default: `llama-3.3-70b-versatile`) |
+| `AZURE_DEVOPS_ORG` | Azure DevOps | Yes |
+| `AZURE_DEVOPS_PROJECT` | Azure DevOps | Yes |
+| `AZURE_DEVOPS_PAT` | Azure DevOps | Yes |
+| `JIRA_BASE_URL` | Jira | Yes |
+| `JIRA_EMAIL` | Jira | Yes |
+| `JIRA_PAT` | Jira | Yes |
+| `JIRA_VERIFY` | Jira | No (default: `true`) |
+| `CONFLUENCE_BASE_URL` | Confluence | Yes |
+| `CONFLUENCE_EMAIL` | Confluence | Yes |
+| `CONFLUENCE_TOKEN` | Confluence | Yes |
