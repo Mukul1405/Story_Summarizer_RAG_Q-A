@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from io import BytesIO
 from tempfile import NamedTemporaryFile
 
-# Optionally available libs for docx/pdf/html parsing
 try:
     from docx import Document as DocxDocument
 except Exception:
@@ -28,7 +27,6 @@ try:
 except Exception:
     BeautifulSoup = None
 
-# Excel handling
 try:
     import pandas as pd
     import openpyxl
@@ -36,34 +34,23 @@ except Exception:
     pd = None
     openpyxl = None
 
-# LangChain pieces (standard names)
-# Replace the old import block (lines 34-42) with this:
-
-# LangChain pieces (updated imports for newer versions)
 try:
-    # Text splitter - try new location first
     try:
         from langchain_text_splitters import CharacterTextSplitter
     except ImportError:
         from langchain.text_splitter import CharacterTextSplitter
-    
-    # Embeddings
+
     from langchain_huggingface import HuggingFaceEmbeddings
-    
-    # Vector store
     from langchain_community.vectorstores import FAISS
-    
-    # Chains - ConversationalRetrievalChain moved to langchain.chains.retrieval
+
     try:
         from langchain.chains import ConversationalRetrievalChain
     except (ImportError, ModuleNotFoundError):
         try:
             from langchain.chains.retrieval import ConversationalRetrievalChain
         except (ImportError, ModuleNotFoundError):
-            # For langchain >= 1.0, we need to build it manually using LCEL
             from langchain.chains.conversational_retrieval.base import ConversationalRetrievalChain
-    
-    # Memory
+
     try:
         from langchain.memory import ConversationBufferMemory
     except ImportError:
@@ -73,8 +60,7 @@ try:
         except ImportError:
             from langchain_core.chat_history import BaseChatMessageHistory
             from langchain.memory import ConversationBufferMemory
-    
-    # Document
+
     try:
         from langchain.docstore.document import Document
     except ImportError:
@@ -82,12 +68,11 @@ try:
             from langchain_core.documents import Document
         except ImportError:
             from langchain_community.docstore.document import Document
-            
+
 except Exception as e:
     st.error(f"Required langchain packages not found. Please install langchain and related packages.\nError: {e}")
     raise
 
-# Try to import Groq provider (optional)
 USE_GROQ = False
 ChatGroq = None
 try:
@@ -97,7 +82,6 @@ except Exception:
     USE_GROQ = False
     ChatGroq = None
 
-# Groq client for test case generation
 try:
     from groq import Groq
     GROQ_CLIENT_AVAILABLE = True
@@ -105,26 +89,46 @@ except Exception:
     GROQ_CLIENT_AVAILABLE = False
     Groq = None
 
-MODEL_CONFIG = {
-    "llama-3.3-70b-versatile": {"max_tokens": 8000, "max_input_chars": 6000},
-    "openai/gpt-oss-20b":      {"max_tokens": 4000, "max_input_chars": 4000},
-    "groq/compound":            {"max_tokens": 4000, "max_input_chars": 4000},
-    "qwen/qwen3-32b":           {"max_tokens": 4000, "max_input_chars": 3000},
-}
-DEFAULT_MODEL_CONFIG = {"max_tokens": 4000, "max_input_chars": 4000}
+# -------------------------
+# Session / Env
+# -------------------------
 
-# -------------------------
-# Utility functions
-# -------------------------
+SOURCE_TYPES = ["Azure DevOps", "Jira", "Confluence"]
 
 def load_env_to_session():
     load_dotenv()
+    if "source_type" not in st.session_state:
+        st.session_state["source_type"] = "Azure DevOps"
+    # Azure DevOps
     if "org" not in st.session_state:
         st.session_state["org"] = os.getenv("AZURE_DEVOPS_ORG", "")
     if "project" not in st.session_state:
         st.session_state["project"] = os.getenv("AZURE_DEVOPS_PROJECT", "")
     if "pat" not in st.session_state:
         st.session_state["pat"] = os.getenv("AZURE_DEVOPS_PAT", "")
+    # Jira
+    if "jira_base_url" not in st.session_state:
+        st.session_state["jira_base_url"] = os.getenv("JIRA_BASE_URL", "")
+    if "jira_email" not in st.session_state:
+        st.session_state["jira_email"] = os.getenv("JIRA_EMAIL", "")
+    if "jira_token" not in st.session_state:
+        st.session_state["jira_token"] = os.getenv("JIRA_PAT", "")
+    if "jira_project" not in st.session_state:
+        st.session_state["jira_project"] = os.getenv("JIRA_PROJECT", "")
+    if "jira_verify_ssl" not in st.session_state:
+        st.session_state["jira_verify_ssl"] = os.getenv("JIRA_VERIFY", "true").lower() != "false"
+    # Confluence
+    if "conf_base_url" not in st.session_state:
+        st.session_state["conf_base_url"] = os.getenv("CONFLUENCE_BASE_URL", os.getenv("JIRA_BASE_URL", ""))
+    if "conf_email" not in st.session_state:
+        st.session_state["conf_email"] = os.getenv("CONFLUENCE_EMAIL", os.getenv("JIRA_EMAIL", ""))
+    if "conf_token" not in st.session_state:
+        st.session_state["conf_token"] = os.getenv("CONFLUENCE_TOKEN", os.getenv("JIRA_PAT", ""))
+    if "conf_space" not in st.session_state:
+        st.session_state["conf_space"] = os.getenv("CONFLUENCE_SPACE", "")
+    if "conf_verify_ssl" not in st.session_state:
+        st.session_state["conf_verify_ssl"] = True
+    # Shared
     if "groq_key" not in st.session_state:
         st.session_state["groq_key"] = os.getenv("GROQ_API_KEY", "")
     if "vectorstore" not in st.session_state:
@@ -144,21 +148,9 @@ def load_env_to_session():
     if "test_cases_excel" not in st.session_state:
         st.session_state["test_cases_excel"] = None
 
-def clean_org_for_api(org: str) -> str:
-    if not org:
-        return ""
-    org = org.strip()
-    m = re.search(r"dev\.azure\.com/([^/]+)", org, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
-    m = re.search(r"https?://([^./]+)\.visualstudio\.com", org, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
-    if org.startswith("http"):
-        parts = [p for p in org.split("/") if p]
-        if parts:
-            return parts[-1]
-    return org
+# -------------------------
+# Shared utilities
+# -------------------------
 
 def strip_html_to_text(html: str) -> str:
     if not html:
@@ -175,6 +167,55 @@ def strip_html_to_text(html: str) -> str:
             pass
     text = re.sub(r"<[^>]+>", "", html)
     return text.strip()
+
+def adf_to_text(adf_doc) -> str:
+    """Convert Atlassian Document Format (ADF) JSON to plain text."""
+    if not adf_doc:
+        return ""
+    if isinstance(adf_doc, str):
+        return adf_doc
+    texts = []
+
+    def _extract(node):
+        if not isinstance(node, dict):
+            return
+        ntype = node.get("type", "")
+        if ntype == "text":
+            texts.append(node.get("text", ""))
+        elif ntype == "hardBreak":
+            texts.append("\n")
+        elif ntype in ("paragraph", "heading", "listItem", "blockquote"):
+            for child in node.get("content", []):
+                _extract(child)
+            texts.append("\n")
+        else:
+            for child in node.get("content", []):
+                _extract(child)
+
+    _extract(adf_doc)
+    return "".join(texts).strip()
+
+# -------------------------
+# Azure DevOps functions
+# -------------------------
+
+import urllib.parse
+
+def clean_org_for_api(org: str) -> str:
+    if not org:
+        return ""
+    org = org.strip()
+    m = re.search(r"dev\.azure\.com/([^/]+)", org, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"https?://([^./]+)\.visualstudio\.com", org, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    if org.startswith("http"):
+        parts = [p for p in org.split("/") if p]
+        if parts:
+            return parts[-1]
+    return org
 
 def azure_fetch_work_item(org: str, project: str, work_item_id: str, pat: str) -> Tuple[str, str]:
     if not all([org, project, work_item_id, pat]):
@@ -198,15 +239,10 @@ def azure_fetch_work_item(org: str, project: str, work_item_id: str, pat: str) -
     return strip_html_to_text(description), strip_html_to_text(acceptance)
 
 def azure_fetch_work_item_comments(org: str, project: str, work_item_id: str, pat: str) -> List[dict]:
-    """
-    Fetch ALL comments for a work item with pagination and priority ranking.
-    Returns list of dicts: [{'author': str, 'text': str, 'created': str, 'weight': int}]
-    """
     try:
         org_clean = clean_org_for_api(org)
         base_url = f"https://dev.azure.com/{org_clean}"
         url = f"{base_url}/{project}/_apis/wit/workItems/{work_item_id}/comments?api-version=7.1-preview.3"
-
         all_comments = []
         continuation_token = None
 
@@ -214,15 +250,12 @@ def azure_fetch_work_item_comments(org: str, project: str, work_item_id: str, pa
             headers = {}
             if continuation_token:
                 headers["x-ms-continuationtoken"] = continuation_token
-
             resp = requests.get(url, auth=("", pat), headers=headers)
             if resp.status_code == 404:
-                break  # No comments
+                break
             resp.raise_for_status()
-
             data = resp.json()
-            comments = data.get("comments", [])
-            for c in comments:
+            for c in data.get("comments", []):
                 author = c.get("createdBy", {}).get("displayName", "Unknown")
                 text = strip_html_to_text(c.get("text", "")).strip()
                 created = c.get("createdDate", "")
@@ -233,422 +266,163 @@ def azure_fetch_work_item_comments(org: str, project: str, work_item_id: str, pa
                         weight = 3
                     elif any(k in name_lower for k in ["qa", "test"]):
                         weight = 2
-                    elif any(k in name_lower for k in ["po", "manager", "lead"]):
-                        weight = 1
-
-                    all_comments.append({
-                        "author": author,
-                        "text": text,
-                        "created": created,
-                        "weight": weight
-                    })
-
+                    all_comments.append({"author": author, "text": text, "created": created, "weight": weight})
             continuation_token = resp.headers.get("x-ms-continuationtoken")
             if not continuation_token:
-                break  # no more pages
+                break
 
-        # Sort by weight (desc) then recency
         all_comments.sort(key=lambda x: (x["weight"], x["created"]), reverse=True)
         return all_comments
-
     except Exception as e:
         st.warning(f"Comment fetch failed for {work_item_id}: {e}")
         return []
 
-import urllib.parse
-
 def azure_fetch_linked_prs(org: str, project: str, work_item_id: str, pat: str) -> List[dict]:
-    """
-    Fetch Pull Requests linked to a given Azure DevOps work item.
-    Supports 3-part vstfs PullRequestId format:
-    vstfs:///Git/PullRequestId/<projectId>%2F<repoId>%2F<prId>
-    Returns: list of dicts [{ 'projectId': str, 'repoId': str, 'prId': str }]
-    """
     try:
         org_clean = clean_org_for_api(org)
         base_url = f"https://dev.azure.com/{org_clean}"
         url = f"{base_url}/{project}/_apis/wit/workItems/{work_item_id}?$expand=relations&api-version=7.1"
-
         resp = requests.get(url, auth=("", pat))
         resp.raise_for_status()
         data = resp.json()
-
         relations = data.get("relations", [])
         prs = []
-
         for rel in relations:
             url_val = rel.get("url", "")
             if "PullRequestId" in url_val:
                 encoded = url_val.split("PullRequestId/")[-1]
-                decoded = urllib.parse.unquote(encoded)  # decode %2F → /
+                decoded = urllib.parse.unquote(encoded)
                 parts = decoded.split("/")
-                if len(parts) == 3:  # ProjectID / RepoID / PRID
+                if len(parts) == 3:
                     project_id, repo_id, pr_id = parts
-                    prs.append({
-                        "projectId": project_id,
-                        "repoId": repo_id,
-                        "prId": pr_id
-                    })
+                    prs.append({"projectId": project_id, "repoId": repo_id, "prId": pr_id})
         return prs
     except Exception as e:
         st.warning(f"PR fetch failed for {work_item_id}: {e}")
         return []
 
 def azure_fetch_pr_file_diffs(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[dict]:
-    """
-    Fetch actual file diffs from Azure DevOps PR using the correct API endpoints.
-    Returns list of dicts with actual diff content.
-    
-    APPROACHES:
-    1. Try iterations API with diff format
-    2. Fall back to commit comparison
-    3. Final fallback: file content only
-    """
     try:
         org_clean = clean_org_for_api(org)
         base_url = f"https://dev.azure.com/{org_clean}"
-        
         st.info("🔍 Attempting to fetch PR diffs...")
-        
-        # APPROACH 1: Get PR details first
+
         pr_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}?api-version=7.1"
         pr_resp = requests.get(pr_url, auth=("", pat))
-        
         if pr_resp.status_code != 200:
             st.error(f"❌ Cannot fetch PR details: {pr_resp.status_code}")
             return []
-        
+
         pr_data = pr_resp.json()
         source_commit = pr_data.get("lastMergeSourceCommit", {}).get("commitId")
         target_commit = pr_data.get("lastMergeTargetCommit", {}).get("commitId")
-        
         st.info(f"✅ PR commits - Source: {source_commit[:8] if source_commit else 'N/A'}, Target: {target_commit[:8] if target_commit else 'N/A'}")
-        
+
         result = []
-        
-        # APPROACH 2: Get changed files using iterations API
         iter_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations?api-version=7.1"
         iter_resp = requests.get(iter_url, auth=("", pat))
-        
         if iter_resp.status_code != 200:
             st.warning(f"⚠️ Iterations API failed: {iter_resp.status_code}")
             return []
-        
-        iter_data = iter_resp.json()
-        iterations = iter_data.get("value", [])
-        
+
+        iterations = iter_resp.json().get("value", [])
         if not iterations:
             st.warning("⚠️ No iterations found")
             return []
-        
+
         latest_iter_id = iterations[-1].get("id")
         st.info(f"📋 Using iteration {latest_iter_id}")
-        
-        # APPROACH 3: Get changes with proper expansion
+
         changes_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations/{latest_iter_id}/changes?api-version=7.1"
         changes_resp = requests.get(changes_url, auth=("", pat))
-        
         if changes_resp.status_code != 200:
             st.error(f"❌ Changes API failed: {changes_resp.status_code}")
-            st.error(f"Response: {changes_resp.text[:500]}")
             return []
-        
-        changes_data = changes_resp.json()
-        change_entries = changes_data.get("changeEntries", [])
-        
+
+        change_entries = changes_resp.json().get("changeEntries", [])
         st.info(f"📊 Found {len(change_entries)} changed files")
-        
-        # Process each changed file
-        for idx, entry in enumerate(change_entries[:15], 1):  # Limit to 15 files
+
+        for idx, entry in enumerate(change_entries[:15], 1):
             item = entry.get("item", {})
             change_type = entry.get("changeType", "edit")
-            
             path = item.get("path", "")
-            if not path:
+            if not path or item.get("gitObjectType") == "tree":
                 continue
-            
-            # Skip directories and non-code files
-            if item.get("gitObjectType") == "tree":
-                continue
-            
+
             file_name = path.split("/")[-1]
             extension = path.split(".")[-1] if "." in path else "unknown"
-            
             st.info(f"  📄 {idx}. Processing {file_name}...")
-            
-            # APPROACH 4: Try to get actual diff using commits
+
             diff_content = "[Diff not available]"
-            
             if source_commit and target_commit and change_type.lower() in ["edit", "add"]:
                 try:
-                    # Method A: Try diff API
-                    diff_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/diffs/commits?baseVersion={target_commit}&targetVersion={source_commit}&api-version=7.1"
-                    diff_resp = requests.get(diff_url, auth=("", pat), timeout=10)
-                    
-                    if diff_resp.status_code == 200:
-                        diff_data = diff_resp.json()
-                        # Find our file in the diff
-                        for change in diff_data.get("changes", []):
-                            if change.get("item", {}).get("path") == path:
-                                diff_content = f"Change detected in {path}\n"
-                                diff_content += f"Lines added/modified in this file\n"
-                                st.success(f"    ✓ Got diff for {file_name}")
-                                break
-                    
-                    # Method B: Get file content from both commits and compare
-                    if diff_content == "[Diff not available]":
-                        source_blob = item.get("objectId")
-                        if source_blob:
-                            blob_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/blobs/{source_blob}?api-version=7.1"
-                            blob_resp = requests.get(blob_url, auth=("", pat), timeout=5)
-                            
-                            if blob_resp.status_code == 200:
-                                content = blob_resp.text[:2000]  # First 2000 chars
-                                diff_content = f"=== Modified: {file_name} ===\n\n{content}\n\n[Content truncated...]"
-                                st.success(f"    ✓ Got file content for {file_name}")
-                
+                    source_blob = item.get("objectId")
+                    if source_blob:
+                        blob_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/blobs/{source_blob}?api-version=7.1"
+                        blob_resp = requests.get(blob_url, auth=("", pat), timeout=5)
+                        if blob_resp.status_code == 200:
+                            content = blob_resp.text[:2000]
+                            diff_content = f"=== Modified: {file_name} ===\n\n{content}\n\n[Content truncated...]"
+                            st.success(f"    ✓ Got file content for {file_name}")
                 except Exception as e:
-                    st.warning(f"    ⚠️ Could not fetch diff for {file_name}: {str(e)[:100]}")
                     diff_content = f"[Error: {str(e)[:100]}]"
-            
+
             result.append({
-                'path': path,
-                'fileName': file_name,
-                'extension': extension,
-                'changeType': change_type,
-                'diff': diff_content,
-                'summary': f"File: {file_name}\nPath: {path}\nChange: {change_type}"
+                "path": path, "fileName": file_name, "extension": extension,
+                "changeType": change_type, "diff": diff_content,
+                "summary": f"File: {file_name}\nPath: {path}\nChange: {change_type}"
             })
-        
+
         st.success(f"✅ Successfully processed {len(result)} files")
         return result
-        
     except Exception as e:
         st.error(f"❌ Exception in PR diff fetch: {e}")
-        import traceback
-        st.error(traceback.format_exc())
         return []
 
-
-def azure_fetch_pr_changes(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[dict]:
-    """
-    Wrapper function - tries multiple strategies to get PR changes
-    """
-    # Try the main diff fetching method
-    results = azure_fetch_pr_file_diffs(org, project_id, repo_id, pr_id, pat)
-    
-    if results:
-        return results
-    
-    # FALLBACK: Metadata-only approach (compliance-safe)
-    st.warning("⚠️ Falling back to metadata-only analysis (compliance-safe mode)")
-    return azure_fetch_pr_metadata_only(org, project_id, repo_id, pr_id, pat)
-
-
 def azure_fetch_pr_metadata_only(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[dict]:
-    """
-    FALLBACK: Get file metadata only (no diffs) - always works, compliance-safe
-    """
     try:
         org_clean = clean_org_for_api(org)
         base_url = f"https://dev.azure.com/{org_clean}"
-        
-        # Get PR commits
         commits_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/commits?api-version=7.1"
         commits_resp = requests.get(commits_url, auth=("", pat))
-        
         if commits_resp.status_code != 200:
             return []
-        
-        commits_data = commits_resp.json()
-        commits = commits_data.get("value", [])
-        
+        commits = commits_resp.json().get("value", [])
         result = []
         file_extensions = set()
-        
-        # Get file list from latest commit
         if commits:
             latest_commit = commits[-1].get("commitId")
             changes_url = f"{base_url}/{project_id}/_apis/git/repositories/{repo_id}/commits/{latest_commit}/changes?api-version=7.1"
             changes_resp = requests.get(changes_url, auth=("", pat))
-            
             if changes_resp.status_code == 200:
-                changes_data = changes_resp.json()
-                changes = changes_data.get("changes", [])
-                
-                for change in changes[:20]:
+                for change in changes_resp.json().get("changes", [])[:20]:
                     item = change.get("item", {})
                     path = item.get("path", "")
-                    
                     if not path or item.get("gitObjectType") == "tree":
                         continue
-                    
                     file_name = path.split("/")[-1]
                     extension = path.split(".")[-1] if "." in path else "unknown"
                     change_type = change.get("changeType", "edit")
-                    
                     file_extensions.add(extension)
-                    
                     result.append({
-                        'path': path,
-                        'fileName': file_name,
-                        'extension': extension,
-                        'changeType': change_type,
-                        'diff': f"[Metadata only - {change_type} operation on {extension} file]",
-                        'summary': f"File: {file_name}\nPath: {path}\nType: {extension}\nChange: {change_type}"
+                        "path": path, "fileName": file_name, "extension": extension,
+                        "changeType": change_type,
+                        "diff": f"[Metadata only - {change_type} operation on {extension} file]",
+                        "summary": f"File: {file_name}\nPath: {path}\nType: {extension}\nChange: {change_type}"
                     })
-        
         st.info(f"📊 Metadata-only mode: {len(result)} files, types: {', '.join(file_extensions)}")
         return result
-        
     except Exception as e:
         st.error(f"Even metadata fetch failed: {e}")
         return []
 
+def azure_fetch_pr_changes(org: str, project_id: str, repo_id: str, pr_id: str, pat: str) -> List[dict]:
+    results = azure_fetch_pr_file_diffs(org, project_id, repo_id, pr_id, pat)
+    if results:
+        return results
+    st.warning("⚠️ Falling back to metadata-only analysis (compliance-safe mode)")
+    return azure_fetch_pr_metadata_only(org, project_id, repo_id, pr_id, pat)
 
-def generate_pr_test_focus(org: str, project: str, story_id: str, pat: str, story_text: str) -> str:
-    """
-    Analyze linked PRs - tries to get diffs, falls back to metadata if needed
-    """
-    try:
-        st.info(f"🔍 Step 1: Fetching linked PRs for story {story_id}...")
-        prs = azure_fetch_linked_prs(org, project, story_id, pat)
-        
-        if not prs:
-            return f"*(No PRs linked to story {story_id})*"
-        
-        st.info(f"✅ Found {len(prs)} linked PR(s)")
-        
-        all_changes = []
-        has_actual_diffs = False
-        
-        for idx, pr in enumerate(prs, 1):
-            st.info(f"📁 Analyzing PR {idx}/{len(prs)} (ID: {pr['prId']})...")
-            pr_changes = azure_fetch_pr_changes(org, pr["projectId"], pr["repoId"], pr["prId"], pat)
-            
-            if pr_changes:
-                # Check if we got actual diffs or just metadata
-                sample_diff = pr_changes[0].get('diff', '')
-                if '[Metadata only' not in sample_diff and '[Diff not available]' not in sample_diff:
-                    has_actual_diffs = True
-                
-                st.success(f"  ✓ Retrieved {len(pr_changes)} file changes")
-                all_changes.extend(pr_changes)
-            else:
-                st.warning(f"  ⚠ No changes found for PR {pr['prId']}")
-        
-        if not all_changes:
-            return "*(No changed files detected for linked PRs)*"
-        
-        st.info(f"📊 Total files to review: {len(all_changes)}")
-        
-        # Build context based on what we have
-        if has_actual_diffs:
-            st.success("✅ Got actual code diffs - performing detailed code review")
-            return generate_detailed_code_review(all_changes, story_text)
-        else:
-            st.warning("⚠️ Using metadata-only analysis (compliance-safe)")
-            return generate_metadata_based_analysis(all_changes, story_text)
-        
-    except Exception as e:
-        import traceback
-        st.error(f"Error: {e}")
-        st.error(traceback.format_exc())
-        return f"❌ Error during PR analysis: {e}"
-
-
-def generate_detailed_code_review(changes: List[dict], story_text: str) -> str:
-    """Generate detailed code review when we have actual diffs"""
-    context = []
-    for idx, change in enumerate(changes[:10], 1):
-        context.append(f"""
-### File {idx}: {change.get('fileName')}
-**Path:** {change.get('path')}
-**Change:** {change.get('changeType')}
-**Code:**
-```
-{change.get('diff', '')[:2000]}
-```
-""")
-    
-    prompt = f"""
-You are a SENIOR CODE REVIEWER analyzing actual code changes.
-
-**STORY CONTEXT:**
-{story_text[:1000]}
-
-**CODE CHANGES:**
-{"".join(context)}
-
-**Perform line-by-line analysis and identify:**
-
-### 🐛 CONFIRMED BUGS
-- List actual bugs you see in the code with line-level details
-
-### ⚠️ POTENTIAL ISSUES
-- Code smells, logic flaws, missing validations
-
-### 🎯 CRITICAL TEST SCENARIOS
-- Must-test cases based on code changes
-
-Be specific with file names and code patterns.
-"""
-    
-    llm = get_llm_instance()
-    result = extract_llm_text(llm.invoke(prompt))
-    return result + "\n\n*✅ Based on actual code review*"
-
-
-def generate_metadata_based_analysis(changes: List[dict], story_text: str) -> str:
-    """Generate risk analysis when we only have metadata"""
-    
-    # Group by file type
-    by_type = {}
-    for change in changes:
-        ext = change.get('extension', 'unknown')
-        if ext not in by_type:
-            by_type[ext] = []
-        by_type[ext].append(change)
-    
-    context = []
-    for ext, files in by_type.items():
-        context.append(f"\n**{ext.upper()} Files ({len(files)}):**")
-        for f in files[:5]:
-            context.append(f"- {f.get('fileName')} ({f.get('changeType')})")
-    
-    stats = f"""
-**Files Changed:** {len(changes)}
-**File Types:** {', '.join(by_type.keys())}
-{"".join(context)}
-"""
-    
-    prompt = f"""
-You are a QA ARCHITECT analyzing PR metadata (file paths, types, changes).
-
-**STORY CONTEXT:**
-{story_text[:1000]}
-
-{stats}
-
-**Based on file types and locations, identify:**
-
-### 🔴 HIGH RISK AREAS
-- Backend files → business logic bugs
-- Database files → data integrity issues
-- Config files → environment bugs
-
-### 🎯 TESTING PRIORITIES
-- Must-test scenarios based on changed areas
-
-### ⚠️ COMMON PITFALLS
-- Typical bugs for these file types
-
-Be specific about file names and risk reasoning.
-"""
-    
-    llm = get_llm_instance()
-    result = extract_llm_text(llm.invoke(prompt))
-    return result + "\n\n*🔒 Compliance-safe: metadata-only analysis (no source code sent to AI)*"
 def azure_run_wiql(org: str, project: str, wiql_query: str, pat: str) -> List[str]:
     if not all([org, project, wiql_query, pat]):
         raise ValueError("WIQL: org, project, query and PAT are required.")
@@ -661,9 +435,112 @@ def azure_run_wiql(org: str, project: str, wiql_query: str, pat: str) -> List[st
     if resp.status_code != 200:
         raise RuntimeError(f"WIQL query failed: {resp.status_code} - {resp.text[:500]}")
     data = resp.json()
-    items = data.get("workItems", [])
-    ids = [str(i.get("id")) for i in items if i.get("id")]
-    return ids
+    return [str(i.get("id")) for i in data.get("workItems", []) if i.get("id")]
+
+# -------------------------
+# Jira functions
+# -------------------------
+
+def _jira_headers(email: str, token: str) -> dict:
+    creds = base64.b64encode(f"{email}:{token}".encode()).decode()
+    return {"Authorization": f"Basic {creds}", "Content-Type": "application/json", "Accept": "application/json"}
+
+def jira_fetch_issue(base_url: str, email: str, token: str, issue_key: str, verify_ssl: bool = True) -> Tuple[str, str]:
+    """Fetch a Jira issue and return (description, acceptance_criteria)."""
+    base_url = base_url.rstrip("/")
+    url = f"{base_url}/rest/api/3/issue/{issue_key}"
+    resp = requests.get(url, headers=_jira_headers(email, token), verify=verify_ssl)
+    if resp.status_code == 401:
+        raise RuntimeError(f"Jira authentication failed for {issue_key}. Check email and API token.")
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to fetch Jira issue {issue_key}: {resp.status_code} - {resp.text[:300]}")
+    fields = resp.json().get("fields", {})
+
+    desc_raw = fields.get("description") or ""
+    description = adf_to_text(desc_raw) if isinstance(desc_raw, dict) else strip_html_to_text(str(desc_raw))
+
+    ac = ""
+    for key, val in fields.items():
+        if "acceptance" in key.lower() and val:
+            ac = adf_to_text(val) if isinstance(val, dict) else strip_html_to_text(str(val))
+            break
+
+    return description, ac
+
+def jira_fetch_issue_title(base_url: str, email: str, token: str, issue_key: str, verify_ssl: bool = True) -> str:
+    base_url = base_url.rstrip("/")
+    url = f"{base_url}/rest/api/3/issue/{issue_key}?fields=summary"
+    resp = requests.get(url, headers=_jira_headers(email, token), verify=verify_ssl)
+    if resp.status_code == 200:
+        return resp.json().get("fields", {}).get("summary", issue_key)
+    return issue_key
+
+def jira_fetch_issue_comments(base_url: str, email: str, token: str, issue_key: str, verify_ssl: bool = True) -> List[dict]:
+    try:
+        base_url = base_url.rstrip("/")
+        all_comments = []
+        url = f"{base_url}/rest/api/3/issue/{issue_key}/comment?maxResults=100&orderBy=created"
+        while url:
+            resp = requests.get(url, headers=_jira_headers(email, token), verify=verify_ssl)
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            for c in data.get("comments", []):
+                author = c.get("author", {}).get("displayName", "Unknown")
+                body_raw = c.get("body") or ""
+                text = adf_to_text(body_raw) if isinstance(body_raw, dict) else strip_html_to_text(str(body_raw))
+                created = c.get("created", "")
+                if text.strip():
+                    all_comments.append({"author": author, "text": text.strip(), "created": created, "weight": 1})
+            url = data.get("nextPage")
+        return all_comments
+    except Exception as e:
+        st.warning(f"Jira comment fetch failed for {issue_key}: {e}")
+        return []
+
+def jira_run_jql(base_url: str, email: str, token: str, jql: str, verify_ssl: bool = True) -> List[str]:
+    if not all([base_url, email, token, jql]):
+        raise ValueError("Jira base URL, email, token, and JQL are required.")
+    base_url = base_url.rstrip("/")
+    url = f"{base_url}/rest/api/3/search"
+    body = {"jql": jql, "maxResults": 100, "fields": ["key", "summary"]}
+    resp = requests.post(url, headers=_jira_headers(email, token), json=body, verify=verify_ssl)
+    if resp.status_code != 200:
+        raise RuntimeError(f"JQL query failed: {resp.status_code} - {resp.text[:500]}")
+    return [issue.get("key") for issue in resp.json().get("issues", []) if issue.get("key")]
+
+# -------------------------
+# Confluence functions
+# -------------------------
+
+def confluence_fetch_page(base_url: str, email: str, token: str, page_id: str, verify_ssl: bool = True) -> Tuple[str, str]:
+    """Fetch a Confluence page and return (title, content_text)."""
+    base_url = base_url.rstrip("/")
+    url = f"{base_url}/wiki/rest/api/content/{page_id}?expand=body.storage,title"
+    resp = requests.get(url, headers=_jira_headers(email, token), verify=verify_ssl)
+    if resp.status_code == 401:
+        raise RuntimeError(f"Confluence authentication failed for page {page_id}. Check email and API token.")
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to fetch Confluence page {page_id}: {resp.status_code} - {resp.text[:300]}")
+    data = resp.json()
+    title = data.get("title", f"Page-{page_id}")
+    html_content = data.get("body", {}).get("storage", {}).get("value", "")
+    return title, strip_html_to_text(html_content)
+
+def confluence_search_cql(base_url: str, email: str, token: str, cql: str, verify_ssl: bool = True) -> List[str]:
+    if not all([base_url, email, token, cql]):
+        raise ValueError("Confluence base URL, email, token, and CQL are required.")
+    base_url = base_url.rstrip("/")
+    encoded_cql = requests.utils.quote(cql)
+    url = f"{base_url}/wiki/rest/api/content/search?cql={encoded_cql}&limit=50"
+    resp = requests.get(url, headers=_jira_headers(email, token), verify=verify_ssl)
+    if resp.status_code != 200:
+        raise RuntimeError(f"CQL query failed: {resp.status_code} - {resp.text[:500]}")
+    return [result.get("id") for result in resp.json().get("results", []) if result.get("id")]
+
+# -------------------------
+# Document / file utilities
+# -------------------------
 
 def extract_text_from_file(uploaded_file) -> str:
     name = uploaded_file.name.lower()
@@ -690,15 +567,13 @@ def extract_text_from_file(uploaded_file) -> str:
     if name.endswith(".pdf"):
         if PyPDF2 is None:
             raise RuntimeError("PyPDF2 not installed. Install: pip install PyPDF2")
-        tmp = BytesIO(content)
-        reader = PyPDF2.PdfReader(tmp)
+        reader = PyPDF2.PdfReader(BytesIO(content))
         pages = []
         for p in reader.pages:
             try:
-                t = p.extract_text() or ""
+                pages.append(p.extract_text() or "")
             except Exception:
-                t = ""
-            pages.append(t)
+                pages.append("")
         return "\n".join(pages)
     try:
         return content.decode("utf-8", errors="ignore")
@@ -714,17 +589,18 @@ def build_docs_from_texts(title_text_pairs: List[Tuple[str, str]]) -> List[Docum
         docs.append(Document(page_content=content, metadata={"source": title}))
     return docs
 
+# -------------------------
+# LLM helpers
+# -------------------------
+
 def extract_llm_text(llm_result) -> str:
     if isinstance(llm_result, str):
         return llm_result
-    
-    # Try to get content attribute directly (for ChatGroq responses)
     try:
-        if hasattr(llm_result, 'content'):
+        if hasattr(llm_result, "content"):
             return llm_result.content
     except Exception:
         pass
-    
     try:
         gens = getattr(llm_result, "generations", None)
         if gens:
@@ -738,7 +614,7 @@ def extract_llm_text(llm_result) -> str:
         for k in ("answer", "text", "content", "output_text"):
             if k in llm_result and llm_result[k]:
                 return llm_result[k] if isinstance(llm_result[k], str) else str(llm_result[k])
-        if "choices" in llm_result and isinstance(llm_result["choices"], (list, tuple)) and len(llm_result["choices"]) > 0:
+        if "choices" in llm_result and llm_result["choices"]:
             c = llm_result["choices"][0]
             if isinstance(c, dict):
                 m = c.get("message") or c.get("text")
@@ -759,511 +635,446 @@ def get_llm_instance():
             return llm
         except Exception as e:
             raise RuntimeError(f"Failed to initialize ChatGroq: {e}")
-    raise RuntimeError(
-        "Groq LLM not configured or langchain_groq not installed. "
-        "Set GROQ_API_KEY in .env and install langchain-groq, or modify get_llm_instance() to return a HuggingFace LLM."
-    )
+    raise RuntimeError("Groq LLM not configured. Set GROQ_API_KEY in .env and install langchain-groq.")
 
 def strict_split(text, chunk_size=1000, chunk_overlap=200):
     chunks = []
     start = 0
     while start < len(text):
         end = min(start + chunk_size, len(text))
-        chunk = text[start:end]
-        if len(chunk) > chunk_size:
-            chunk = chunk[:chunk_size]
-        chunks.append(chunk)
+        chunks.append(text[start:end])
         start += chunk_size - chunk_overlap
     return chunks
 
+# -------------------------
+# Flow diagram
+# -------------------------
+
 def generate_flow_diagram(title_text_pairs: List[Tuple[str, str]]) -> str:
-    """
-    Generate intelligent flow diagram for ANY type of story
-    """
     try:
         llm = get_llm_instance()
-        
-        # Prepare comprehensive story content
-        all_text = ""
-        for idx, (title, text) in enumerate(title_text_pairs[:8], 1):
-            clean_title = title.replace('WorkItem-', '').replace('_', ' ')
-            all_text += f"\n\n=== Story {idx}: {clean_title} ===\n{text[:1200]}"
-        
-        # Universal intelligent prompt
-        prompt = f"""You are an expert business analyst creating a technical flow diagram. Read 
-            the user stories below and create a Mermaid flowchart that accurately represents 
-            the ACTUAL LOGIC AND WORKFLOW described.
+        stories_text = "\n\n".join([
+            f"Item {idx+1}: {title}\nContent: {text[:1000]}"
+            for idx, (title, text) in enumerate(title_text_pairs[:10])
+        ])
+        prompt = f"""Analyze the following items and create a Mermaid flowchart diagram showing their relationships and workflow.
 
-            **USER STORIES:**
-            {all_text}
+CRITICAL RULES:
+1. Use ONLY these node types:
+   - Rectangle: A[Text Here]
+   - Rounded: A([Text Here])
+   - Diamond: A{{{{Text Here}}}}  (use DOUBLE curly braces)
+2. Keep node text SHORT (max 6 words)
+3. Use SIMPLE arrow syntax: A --> B
+4. Do NOT use special characters: ? : ; # & " in node text
+5. Start with: graph LR
+6. Output ONLY the Mermaid code, no explanations
 
-            **YOUR TASK:**
-            Carefully analyze the content above and extract:
-            1. What are the ACTUAL steps/processes mentioned?
-            2. What are the DECISION points (if/else, conditions, checks)?
-            3. What are the DIFFERENT SCENARIOS or paths?
-            4. What gets CREATED, SAVED, or PROCESSED differently in each case?
-            5. Are there CONFIG checks, FLAG settings, or VALIDATION rules?
+ITEMS:
+{stories_text}
 
-            **CRITICAL INSTRUCTIONS:**
-
-            1. **READ THE CONTENT CAREFULLY** - Don't assume generic flows
-            - Extract EXACT scenarios mentioned (don't invent)
-            - Use ACTUAL terminology from the stories
-            - Show REAL decision points, not generic ones
-
-            2. **Identify the Flow Type:**
-            - If stories mention configs/flags/settings → Show config checks and conditional behavior
-            - If stories mention user actions/screens → Show user workflow
-            - If stories mention API/data/processing → Show data flow
-            - If stories mention different modes/types → Show branching for each
-
-            3. **Mermaid Syntax (STRICTLY FOLLOW):**
-            - Start with: graph TD
-            - Decisions: NodeName{{Question?}} (single braces!)
-            - Steps: NodeName[Action Description]
-            - Start/End: Start([Begin]) and End([Complete])
-            - Conditional arrows: Node -->|Label| NextNode
-            - Keep labels under 50 characters
-            - NO special characters in node text: avoid : ; # & "
-
-            4. **Extract from Stories:**
-            - Look for "As Is" vs "To Be" → Show both flows or just "To Be"
-            - Look for "if/when/based on" → These are decision points
-            - Look for "depending on" → These are branches
-            - Look for "should/will/must" → These are required steps
-            - Look for specific scenarios (Mode A, Mode B, Type X, Type Y)
-
-            5. **Quality Checks:**
-            - Does your diagram reflect what's ACTUALLY in the stories?
-            - Have you included ALL mentioned scenarios?
-            - Are decision points based on REAL conditions from the story?
-            - Do different paths show DIFFERENT outcomes mentioned?
-
-            **EXAMPLE 1 - Config-Based Logic:**
-            ```
-            graph TD
-                Start([Start])
-                Start --> Check{{Mode Type?}}
-                Check -->|Type A| ConfigA[Check Config A]
-                ConfigA --> DefaultA[Set Default Values]
-                DefaultA --> SaveA[Save Type A]
-                Check -->|Type B| ConfigB[Check Config B]
-                ConfigB --> SpecialB[Apply Special Logic]
-                SpecialB --> SaveB[Save Type B Differently]
-                SaveA --> End([Complete])
-                SaveB --> End
-            ```
-
-            **EXAMPLE 2 - User Workflow:**
-            ```
-            graph TD
-                Start([User Opens Screen])
-                Start --> Input[Enter Data]
-                Input --> Validate{{Valid?}}
-                Validate -->|Yes| Process[Process Request]
-                Validate -->|No| Error[Show Error]
-                Error --> Input
-                Process --> Confirm{{Confirmed?}}
-                Confirm -->|Yes| Save[Save Data]
-                Confirm -->|No| Cancel[Cancel]
-                Save --> End([Complete])
-                Cancel --> End
-            ```
-
-            **EXAMPLE 3 - Multi-Scenario:**
-            ```
-            graph TD
-                Start([Begin])
-                Start --> SelectType{{Select Type?}}
-                SelectType -->|Scenario 1| Path1[Process Scenario 1]
-                Path1 --> Action1[Specific Action 1]
-                SelectType -->|Scenario 2| Path2[Process Scenario 2]
-                Path2 --> Check2{{Condition?}}
-                Check2 -->|Yes| Action2A[Action 2A]
-                Check2 -->|No| Action2B[Action 2B]
-                SelectType -->|Scenario 3| Path3[Process Scenario 3]
-                Path3 --> Action3[Specific Action 3]
-                Action1 --> End([Complete])
-                Action2A --> End
-                Action2B --> End
-                Action3 --> End
-            ```
-
-            **OUTPUT REQUIREMENTS:**
-            - Create a diagram that MATCHES the actual story content
-            - Use REAL terminology from the stories
-            - Show ALL scenarios/modes/types mentioned
-            - Include ACTUAL decision points from the stories
-            - Output ONLY the Mermaid code, no explanations
-            - Start with graph TD
-"""
+Generate Mermaid flowchart (graph LR format):"""
 
         result = llm.invoke(prompt)
-        mermaid_code = extract_llm_text(result)
-        
-        # Clean up response
-        mermaid_code = mermaid_code.strip()
+        mermaid_code = extract_llm_text(result).strip()
         mermaid_code = re.sub(r'^```mermaid\s*', '', mermaid_code)
         mermaid_code = re.sub(r'^```\s*', '', mermaid_code)
-        mermaid_code = re.sub(r'```\s*$', '', mermaid_code)
-        mermaid_code = mermaid_code.strip()
-        
-        # Ensure it starts with graph
-        if not mermaid_code.startswith('graph'):
-            mermaid_code = 'graph TD\n' + mermaid_code
-        
-        # Minimal safe cleanup
-        mermaid_code = safe_clean_mermaid(mermaid_code)
-        
-        # Validate the diagram has meaningful content
-        line_count = mermaid_code.count('\n')
-        node_count = mermaid_code.count('[') + mermaid_code.count('{')
-        
-        if line_count < 5 or node_count < 3:
-            st.warning("Generated diagram seems too simple, using content-based fallback")
-            return generate_content_based_fallback(title_text_pairs)
-        
+        mermaid_code = re.sub(r'```\s*$', '', mermaid_code).strip()
+        if not mermaid_code.startswith("graph"):
+            mermaid_code = "graph LR\n" + mermaid_code
         return mermaid_code
     except Exception as e:
-        st.warning(f"LLM generation failed: {str(e)[:100]}")
-        return generate_content_based_fallback(title_text_pairs)
-
-def safe_clean_mermaid(code: str) -> str:
-    """
-    Minimal safe cleanup - only fix obvious issues
-    """
-    # Remove dangerous characters from labels only (inside brackets)
-    def clean_bracket_content(match):
-        content = match.group(1)
-        # Remove only truly problematic chars
-        content = content.replace('"', '').replace("'", '')
-        content = content.replace(':', '').replace(';', '')
-        content = content[:50]  # Limit length
-        return f'[{content}]'
-    
-    # Clean rectangular brackets
-    code = re.sub(r'\[([^\]]+)\]', clean_bracket_content, code)
-    
-    # Clean rounded brackets  
-    def clean_paren_content(match):
-        content = match.group(1)
-        content = content.replace('"', '').replace("'", '')
-        content = content[:30]
-        return f'([{content}])'
-    
-    code = re.sub(r'\(\[([^\]]+)\]\)', clean_paren_content, code)
-    
-    return code
-
-
-def generate_content_based_fallback(title_text_pairs: List[Tuple[str, str]]) -> str:
-    """
-    Intelligent fallback that analyzes actual content patterns
-    """
-    all_text = " ".join([text.lower() for _, text in title_text_pairs])
-    
-    # Extract decision points from content
-    decision_indicators = re.findall(r'(?:if|when|based on|depending on)\s+([^,.\n]{10,60})', all_text)
-    
-    # Extract scenarios/modes/types
-    scenario_patterns = [
-        r'(air|sea|road|rail|fcl|lcl|ftl|ltl)',
-        r'(type\s+\w+|mode\s+\w+|scenario\s+\w+)',
-        r'(option\s+\w+|category\s+\w+)'
-    ]
-    
-    scenarios = set()
-    for pattern in scenario_patterns:
-        matches = re.findall(pattern, all_text, re.IGNORECASE)
-        scenarios.update([m.strip().title() for m in matches if m.strip()])
-    
-    # Extract actions (verbs)
-    action_patterns = r'(?:should|will|must|to)\s+(create|save|update|delete|check|validate|process|calculate|generate|display|send|receive)\s+([^,.\n]{5,40})'
-    actions = re.findall(action_patterns, all_text)
-    
-    # Build diagram based on extracted patterns
-    code = "graph TD\n"
-    code += "    Start([Begin Process])\n"
-    
-    if scenarios:
-        # Has multiple scenarios - create branching
-        code += "    Start --> Select{Choose Option}\n"
-        
-        for idx, scenario in enumerate(list(scenarios)[:5], 1):  # Max 5 scenarios
-            scenario_clean = scenario.replace(' ', '')[:20]
-            code += f"    Select -->|{scenario}| S{idx}Process\n"
-            code += f"    S{idx}Process[Process {scenario}]\n"
-            
-            # Add actions if found
-            if actions and idx <= len(actions):
-                verb, obj = actions[idx-1]
-                code += f"    S{idx}Process --> S{idx}Action[{verb.title()} {obj[:30]}]\n"
-                code += f"    S{idx}Action --> End\n"
+        st.warning(f"Using fallback diagram (LLM error: {str(e)[:100]})")
+        mermaid_code = "graph LR\n    Start([Start])\n"
+        for idx, (title, _) in enumerate(title_text_pairs[:8]):
+            clean_title = re.sub(r"[^\w\s]", "", title.replace("-", " ").replace("_", " "))[:40]
+            clean_title = " ".join(clean_title.split())
+            node_id = f"S{idx+1}"
+            mermaid_code += f'    {node_id}["{clean_title}"]\n'
+            if idx == 0:
+                mermaid_code += f"    Start --> {node_id}\n"
             else:
-                code += f"    S{idx}Process --> End\n"
-    
-    elif decision_indicators:
-        # Has decisions - create conditional flow
-        prev = "Start"
-        for idx, decision in enumerate(decision_indicators[:3], 1):
-            decision_clean = decision.strip()[:40]
-            code += f"    {prev} --> D{idx}{{{decision_clean}?}}\n"
-            code += f"    D{idx} -->|Yes| A{idx}Yes[Process Yes Path]\n"
-            code += f"    D{idx} -->|No| A{idx}No[Process No Path]\n"
-            code += f"    A{idx}Yes --> End\n"
-            code += f"    A{idx}No --> End\n"
-            prev = f"D{idx}"
-            break  # Just show first decision
-    
-    elif actions:
-        # Has actions - create linear flow
-        prev = "Start"
-        for idx, (verb, obj) in enumerate(actions[:5], 1):
-            code += f"    {prev} --> A{idx}[{verb.title()} {obj[:30]}]\n"
-            prev = f"A{idx}"
-        code += f"    {prev} --> End\n"
-    
-    else:
-        # Generic fallback
-        code += "    Start --> Process[Process Request]\n"
-        code += "    Process --> Validate{{Valid?}}\n"
-        code += "    Validate -->|Yes| Complete[Complete]\n"
-        code += "    Validate -->|No| Error[Handle Error]\n"
-        code += "    Error --> Process\n"
-        code += "    Complete --> End\n"
-    
-    code += "    End([Complete])\n"
-    
-    return code
+                mermaid_code += f"    S{idx} --> {node_id}\n"
+        last_node = f"S{min(len(title_text_pairs), 8)}"
+        mermaid_code += f"    End([Complete])\n    {last_node} --> End\n"
+        return mermaid_code
 
 # -------------------------
-# TEST CASE GENERATION FUNCTIONS
+# PR analysis (Azure DevOps only)
+# -------------------------
+
+def generate_detailed_code_review(changes: List[dict], story_text: str) -> str:
+    context = []
+    for idx, change in enumerate(changes[:10], 1):
+        context.append(f"""
+### File {idx}: {change.get('fileName')}
+**Path:** {change.get('path')}
+**Change:** {change.get('changeType')}
+**Code:**
+```
+{change.get('diff', '')[:2000]}
+```
+""")
+    prompt = f"""You are a SENIOR CODE REVIEWER analyzing actual code changes.
+
+**STORY CONTEXT:**
+{story_text[:1000]}
+
+**CODE CHANGES:**
+{"".join(context)}
+
+**Perform line-by-line analysis and identify:**
+
+### 🐛 CONFIRMED BUGS
+- List actual bugs you see in the code with line-level details
+
+### ⚠️ POTENTIAL ISSUES
+- Code smells, logic flaws, missing validations
+
+### 🎯 CRITICAL TEST SCENARIOS
+- Must-test cases based on code changes
+
+Be specific with file names and code patterns.
+"""
+    llm = get_llm_instance()
+    return extract_llm_text(llm.invoke(prompt)) + "\n\n*✅ Based on actual code review*"
+
+def generate_metadata_based_analysis(changes: List[dict], story_text: str) -> str:
+    by_type = {}
+    for change in changes:
+        ext = change.get("extension", "unknown")
+        by_type.setdefault(ext, []).append(change)
+    context = []
+    for ext, files in by_type.items():
+        context.append(f"\n**{ext.upper()} Files ({len(files)}):**")
+        for f in files[:5]:
+            context.append(f"- {f.get('fileName')} ({f.get('changeType')})")
+    stats = f"**Files Changed:** {len(changes)}\n**File Types:** {', '.join(by_type.keys())}\n{''.join(context)}"
+    prompt = f"""You are a QA ARCHITECT analyzing PR metadata.
+
+**STORY CONTEXT:**
+{story_text[:1000]}
+
+{stats}
+
+### 🔴 HIGH RISK AREAS
+- Backend files → business logic bugs
+- Database files → data integrity issues
+- Config files → environment bugs
+
+### 🎯 TESTING PRIORITIES
+- Must-test scenarios based on changed areas
+
+### ⚠️ COMMON PITFALLS
+- Typical bugs for these file types
+"""
+    llm = get_llm_instance()
+    return extract_llm_text(llm.invoke(prompt)) + "\n\n*🔒 Compliance-safe: metadata-only analysis (no source code sent to AI)*"
+
+def generate_pr_test_focus(org: str, project: str, story_id: str, pat: str, story_text: str) -> str:
+    try:
+        st.info(f"🔍 Fetching linked PRs for story {story_id}...")
+        prs = azure_fetch_linked_prs(org, project, story_id, pat)
+        if not prs:
+            return f"*(No PRs linked to story {story_id})*"
+        st.info(f"✅ Found {len(prs)} linked PR(s)")
+        all_changes = []
+        has_actual_diffs = False
+        for idx, pr in enumerate(prs, 1):
+            st.info(f"📁 Analyzing PR {idx}/{len(prs)} (ID: {pr['prId']})...")
+            pr_changes = azure_fetch_pr_changes(org, pr["projectId"], pr["repoId"], pr["prId"], pat)
+            if pr_changes:
+                sample_diff = pr_changes[0].get("diff", "")
+                if "[Metadata only" not in sample_diff and "[Diff not available]" not in sample_diff:
+                    has_actual_diffs = True
+                st.success(f"  ✓ Retrieved {len(pr_changes)} file changes")
+                all_changes.extend(pr_changes)
+            else:
+                st.warning(f"  ⚠ No changes found for PR {pr['prId']}")
+        if not all_changes:
+            return "*(No changed files detected for linked PRs)*"
+        st.info(f"📊 Total files to review: {len(all_changes)}")
+        if has_actual_diffs:
+            st.success("✅ Got actual code diffs - performing detailed code review")
+            return generate_detailed_code_review(all_changes, story_text)
+        else:
+            st.warning("⚠️ Using metadata-only analysis (compliance-safe)")
+            return generate_metadata_based_analysis(all_changes, story_text)
+    except Exception as e:
+        import traceback
+        st.error(traceback.format_exc())
+        return f"❌ Error during PR analysis: {e}"
+
+# -------------------------
+# Test case generation
 # -------------------------
 
 def sanitize_groq_output(text: str) -> str:
-    """
-    Fix common invalid JSON issues from AI output:
-    - Escape unescaped backslashes
-    - Replace invalid single quotes in keys with double quotes
-    - Remove control chars if needed
-    """
-    # Escape unescaped backslashes (excluding already escaped ones)
     text = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r'\\\\', text)
-    
-    # Replace single quoted property names with double quotes
     text = re.sub(r"(?<=\{|\s)'([^']+)':", r'"\1":', text)
-
-    # Remove control characters that can break JSON parsing
     text = re.sub(r"[\x00-\x1f\x7f]", "", text)
-
     return text
 
-def make_groq_test_prompt(title: str, description: str, 
-                          acceptance_criteria: str, model: str = "") -> str:
-    cfg = MODEL_CONFIG.get(model, DEFAULT_MODEL_CONFIG)
-    max_chars = cfg["max_input_chars"]
-
-    # Truncate inputs to stay within token budget
-    desc_truncated = description[:max_chars]
-    ac_truncated = acceptance_criteria[:max_chars // 2]
-
-    prompt = f"""
-You are a senior test-design engineer. For the user story below, produce a structured list of test cases.
+def make_groq_test_prompt(title: str, description: str, acceptance_criteria: str) -> str:
+    return f"""
+You are a senior test-design engineer. For the user story below, produce a highly comprehensive, structured list of test cases.
 Your output MUST be valid JSON (an array of objects). Each object should have:
   - test_case_id
   - priority (High/Medium/Low)
   - test_case (short title)
   - precondition
-  - test_steps (array of strings)
+  - test_steps (ordered list of steps as an array)
   - expected_result
 
-User Story Title: {title}
+User Story Title:
+{title}
 
 Description:
-{desc_truncated}
+{description}
 
 Acceptance Criteria:
-{ac_truncated}
+{acceptance_criteria}
 
 RULES:
-1. Generate 20-40 test cases covering positive, negative, edge, boundary, and integration scenarios.
-2. Assign priority based on risk and business value.
-3. Each expected_result must be 1-2 sentences.
-4. Return ONLY the JSON array, no extra commentary.
-"""
-    return prompt.strip()
+1. Generate complete set of test cases ranging(30-100 cases), covering all realistic, edge, boundary, integration, negative, performance, usability, security, accessibility, and error handling scenarios.
+2. Go beyond acceptance criteria: include positive, negative, boundary value, data validation, regression, integration, compatibility, performance, security, usability, and accessibility test cases.
+3. Assign priority based on risk, business value, and acceptance criteria.
+4. Each expected_result must be 1–2 sentences, concise yet clear.
+5. Ensure deep coverage so that even if acceptance criteria are limited, cases extrapolate all flows.
+6. Return only the JSON array, no extra commentary.
+""".strip()
 
 def call_groq_for_tests(prompt: str, api_key: str, model: str = "llama-3.3-70b-versatile", timeout: int = 120):
     if not GROQ_CLIENT_AVAILABLE:
         raise RuntimeError("Groq client not available. Install: pip install groq")
-    
-    cfg = MODEL_CONFIG.get(model, DEFAULT_MODEL_CONFIG)
-    safe_max_tokens = cfg["max_tokens"]
     client = Groq(api_key=api_key)
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
-        max_tokens=safe_max_tokens,
+        max_tokens=32768,
         timeout=timeout,
     )
-    text = response.choices[0].message.content.strip()
-
-    # Sanitize the output to fix JSON issues before loading
-    sanitized_text = sanitize_groq_output(text)
-
+    text = sanitize_groq_output(response.choices[0].message.content.strip())
     try:
-        return json.loads(sanitized_text)
+        return json.loads(text)
     except Exception:
-        first, last = sanitized_text.find("["), sanitized_text.rfind("]")
+        first, last = text.find("["), text.rfind("]")
         if first != -1 and last != -1:
             try:
-                return json.loads(sanitized_text[first:last+1])
+                return json.loads(text[first:last+1])
             except Exception as e:
-                raise ValueError(f"Groq output not valid JSON after sanitizing:\n{sanitized_text[:1000]}\nError: {str(e)}")
-        raise ValueError(f"Groq output not valid JSON:\n{sanitized_text[:1000]}")
+                raise ValueError(f"Groq output not valid JSON after sanitizing:\n{text[:1000]}\nError: {str(e)}")
+        raise ValueError(f"Groq output not valid JSON:\n{text[:1000]}")
 
-def story_to_testcases(title: str, description_html: str, acceptance_html: str, groq_api_key: str, model: str):
-    desc_text = strip_html_to_text(description_html)
-    ac_text = strip_html_to_text(acceptance_html)
-    prompt = make_groq_test_prompt(title, desc_text, ac_text, model)  # ← pass model
+def story_to_testcases(title: str, description_text: str, acceptance_text: str, groq_api_key: str, model: str):
+    prompt = make_groq_test_prompt(title, description_text, acceptance_text)
     ai_results = call_groq_for_tests(prompt, api_key=groq_api_key, model=model)
-
     rows = []
     for idx, item in enumerate(ai_results, start=1):
-        tc_id = item.get("test_case_id") or f"TC_{idx}"
-        priority = item.get("priority") or "Medium"
-        tc_title = item.get("test_case") or ""
-        pre = item.get("precondition") or ""
         steps = item.get("test_steps") or []
         if isinstance(steps, str):
             steps = [s.strip() for s in steps.splitlines() if s.strip()]
-        expected = item.get("expected_result") or ""
-
         rows.append({
-            "Test Case ID": tc_id,
-            "Priority": priority,
-            "Test Case": tc_title,
-            "Pre-condition / Test Data": pre,
+            "Test Case ID": item.get("test_case_id") or f"TC_{idx}",
+            "Priority": item.get("priority") or "Medium",
+            "Test Case": item.get("test_case") or "",
+            "Pre-condition / Test Data": item.get("precondition") or "",
             "Test Steps": "<br>".join([f"{i+1}. {s}" for i, s in enumerate(steps)]),
-            "Expected Result": expected
+            "Expected Result": item.get("expected_result") or "",
         })
-
-    return pd.DataFrame(rows, columns=[
-        "Test Case ID", "Priority", "Test Case",
-        "Pre-condition / Test Data", "Test Steps", "Expected Result"
-    ])
+    return pd.DataFrame(rows, columns=["Test Case ID", "Priority", "Test Case", "Pre-condition / Test Data", "Test Steps", "Expected Result"])
 
 def replace_br_with_newline_in_memory(wb):
-    """
-    Replace <br> tags with newlines in all cells of the workbook
-    """
     for sheet in wb.sheetnames:
         ws = wb[sheet]
-        
         for row in ws.iter_rows():
             for cell in row:
                 if isinstance(cell.value, str) and "<br>" in cell.value:
                     cell.value = cell.value.replace("<br>", "\n")
-    
     return wb
 
-def generate_test_cases_excel(story_ids: List[str], org: str, project: str, pat: str, groq_key: str, model: str) -> BytesIO:
-    """
-    Generate test cases for multiple stories and return Excel file as BytesIO
-    """
+def generate_test_cases_excel_azure(story_ids: List[str], org: str, project: str, pat: str, groq_key: str, model: str) -> BytesIO:
     if pd is None or openpyxl is None:
-        raise RuntimeError("pandas and openpyxl are required. Install: pip install pandas openpyxl")
-    
+        raise RuntimeError("pandas and openpyxl are required.")
     output = BytesIO()
-    
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for sid in story_ids:
             try:
                 desc, ac = azure_fetch_work_item(org, project, sid, pat)
-                
-                # Fetch title for better sheet naming
                 org_clean = clean_org_for_api(org)
-                base_url = f"https://dev.azure.com/{org_clean}"
-                url = f"{base_url}/{project}/_apis/wit/workitems/{sid}?api-version=7.1"
+                url = f"https://dev.azure.com/{org_clean}/{project}/_apis/wit/workitems/{sid}?api-version=7.1"
                 resp = requests.get(url, auth=("", pat))
                 resp.raise_for_status()
-                data = resp.json()
-                title = data.get("fields", {}).get("System.Title", f"WorkItem_{sid}")
-                
+                title = resp.json().get("fields", {}).get("System.Title", f"WorkItem_{sid}")
                 st.info(f"Generating test cases for {sid} - {title}")
-                
                 df = story_to_testcases(title, desc, ac, groq_key, model)
-                
-                safe_sheet = f"{sid}"[:31]  # Excel sheet name limit
-                df.to_excel(writer, sheet_name=safe_sheet, index=False)
-                time.sleep(0.5)  # Rate limiting
-                
+                df.to_excel(writer, sheet_name=f"{sid}"[:31], index=False)
+                time.sleep(0.5)
             except Exception as e:
-                st.warning(f"Failed to generate test cases for {sid}: {e}")
-                # Create fallback sheet
-                df = pd.DataFrame([{
-                    "Test Case ID": "NA",
-                    "Priority": "NA",
-                    "Test Case": f"Generation failed for {sid}",
-                    "Pre-condition / Test Data": "",
-                    "Test Steps": str(e)[:500],
-                    "Expected Result": ""
-                }])
-                safe_sheet = f"{sid}"[:31]
-                df.to_excel(writer, sheet_name=safe_sheet, index=False)
-    
-    # Load the workbook and replace <br> with newlines
+                st.warning(f"Failed for {sid}: {e}")
+                pd.DataFrame([{"Test Case ID": "NA", "Priority": "NA", "Test Case": f"Generation failed for {sid}",
+                                "Pre-condition / Test Data": "", "Test Steps": str(e)[:500], "Expected Result": ""}]).to_excel(
+                    writer, sheet_name=f"{sid}"[:31], index=False)
     output.seek(0)
-    wb = openpyxl.load_workbook(output)
-    wb = replace_br_with_newline_in_memory(wb)
-    
-    # Save back to BytesIO
+    wb = replace_br_with_newline_in_memory(openpyxl.load_workbook(output))
     final_output = BytesIO()
     wb.save(final_output)
     final_output.seek(0)
-    
+    return final_output
+
+def generate_test_cases_excel_jira(issue_keys: List[str], base_url: str, email: str, token: str, groq_key: str, model: str, verify_ssl: bool = True) -> BytesIO:
+    if pd is None or openpyxl is None:
+        raise RuntimeError("pandas and openpyxl are required.")
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for key in issue_keys:
+            try:
+                desc, ac = jira_fetch_issue(base_url, email, token, key, verify_ssl)
+                title = jira_fetch_issue_title(base_url, email, token, key, verify_ssl)
+                st.info(f"Generating test cases for {key} - {title}")
+                df = story_to_testcases(title, desc, ac, groq_key, model)
+                safe_sheet = re.sub(r"[\\/*?:\[\]]", "_", key)[:31]
+                df.to_excel(writer, sheet_name=safe_sheet, index=False)
+                time.sleep(0.5)
+            except Exception as e:
+                st.warning(f"Failed for {key}: {e}")
+                safe_sheet = re.sub(r"[\\/*?:\[\]]", "_", key)[:31]
+                pd.DataFrame([{"Test Case ID": "NA", "Priority": "NA", "Test Case": f"Generation failed for {key}",
+                                "Pre-condition / Test Data": "", "Test Steps": str(e)[:500], "Expected Result": ""}]).to_excel(
+                    writer, sheet_name=safe_sheet, index=False)
+    output.seek(0)
+    wb = replace_br_with_newline_in_memory(openpyxl.load_workbook(output))
+    final_output = BytesIO()
+    wb.save(final_output)
+    final_output.seek(0)
+    return final_output
+
+def generate_test_cases_excel_confluence(page_ids: List[str], base_url: str, email: str, token: str, groq_key: str, model: str, verify_ssl: bool = True) -> BytesIO:
+    if pd is None or openpyxl is None:
+        raise RuntimeError("pandas and openpyxl are required.")
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for pid in page_ids:
+            try:
+                title, content = confluence_fetch_page(base_url, email, token, pid, verify_ssl)
+                st.info(f"Generating test cases for page {pid} - {title}")
+                df = story_to_testcases(title, content, "", groq_key, model)
+                safe_sheet = re.sub(r"[\\/*?:\[\]]", "_", title[:20] or pid)[:31]
+                df.to_excel(writer, sheet_name=safe_sheet, index=False)
+                time.sleep(0.5)
+            except Exception as e:
+                st.warning(f"Failed for page {pid}: {e}")
+                pd.DataFrame([{"Test Case ID": "NA", "Priority": "NA", "Test Case": f"Generation failed for page {pid}",
+                                "Pre-condition / Test Data": "", "Test Steps": str(e)[:500], "Expected Result": ""}]).to_excel(
+                    writer, sheet_name=f"page_{pid}"[:31], index=False)
+    output.seek(0)
+    wb = replace_br_with_newline_in_memory(openpyxl.load_workbook(output))
+    final_output = BytesIO()
+    wb.save(final_output)
+    final_output.seek(0)
     return final_output
 
 # -------------------------
-# App UI & flow
+# App UI
 # -------------------------
 
-st.set_page_config(page_title="Story Summarizer (Multi) + QnA + Test Cases", layout="wide")
+st.set_page_config(page_title="Story Summarizer & Q&A — Multi-Source", layout="wide")
 load_env_to_session()
 
-st.title("Azure DevOps Story Summarizer — Multi-story / WIQL / Multi-PDF + Q&A + Test Cases")
+st.title("Story Summarizer & Q&A — Multi-Source")
 
-st.sidebar.header("Configuration / Credentials")
-org_input = st.sidebar.text_input("Azure DevOps Organization (org)", key="org", help="Example: dpwhotfsonline or https://dev.azure.com/dpwhotfsonline")
-project_input = st.sidebar.text_input("Azure DevOps Project", key="project")
-pat_input = st.sidebar.text_input("Azure DevOps PAT (personal access token)", key="pat", type="password")
-st.sidebar.caption("Make sure PAT has 'Work Items (Read)' permissions.")
-st.sidebar.write("GROQ_API_KEY present: " + ("Yes" if st.session_state.get("groq_key") else "No"))
+# -------- SIDEBAR --------
+st.sidebar.header("Configuration")
 
-# Create main tabs
-main_tab1, main_tab2 = st.tabs(["📋 Story Summarizer & Q&A", "🧪 Test Case Generator"])
+source_type = st.sidebar.selectbox(
+    "Data Source",
+    SOURCE_TYPES,
+    key="source_type",
+    help="Choose the platform to ingest stories or pages from."
+)
 
-# -------------------------
-# TAB 1: Story Summarizer & Q&A (Original functionality)
-# -------------------------
+st.sidebar.markdown("---")
+
+if source_type == "Azure DevOps":
+    st.sidebar.subheader("Azure DevOps Credentials")
+    st.sidebar.text_input("Organization (org)", key="org",
+                          help="e.g. dpwhotfsonline or https://dev.azure.com/dpwhotfsonline")
+    st.sidebar.text_input("Project", key="project")
+    st.sidebar.text_input("Personal Access Token (PAT)", key="pat", type="password")
+    st.sidebar.caption("PAT needs 'Work Items (Read)' permission.")
+
+elif source_type == "Jira":
+    st.sidebar.subheader("Jira Credentials")
+    st.sidebar.text_input("Jira Base URL", key="jira_base_url",
+                          help="e.g. https://yourcompany.atlassian.net")
+    st.sidebar.text_input("Email", key="jira_email")
+    st.sidebar.text_input("API Token", key="jira_token", type="password",
+                          help="Generate at id.atlassian.com/manage-profile/security/api-tokens")
+    st.sidebar.text_input("Default Project Key (optional)", key="jira_project",
+                          help="Used to pre-fill JQL, e.g. PROJ")
+    st.sidebar.checkbox("Verify SSL", key="jira_verify_ssl", value=True)
+
+elif source_type == "Confluence":
+    st.sidebar.subheader("Confluence Credentials")
+    st.sidebar.text_input("Confluence Base URL", key="conf_base_url",
+                          help="e.g. https://yourcompany.atlassian.net")
+    st.sidebar.text_input("Email", key="conf_email")
+    st.sidebar.text_input("API Token", key="conf_token", type="password")
+    st.sidebar.text_input("Default Space Key (optional)", key="conf_space",
+                          help="Used to pre-fill CQL, e.g. ENG")
+    st.sidebar.checkbox("Verify SSL", key="conf_verify_ssl", value=True)
+
+st.sidebar.markdown("---")
+st.sidebar.write("GROQ_API_KEY: " + ("✅ Present" if st.session_state.get("groq_key") else "❌ Missing"))
+
+# -------- TABS --------
+main_tab1, main_tab2 = st.tabs(["📋 Summarizer & Q&A", "🧪 Test Case Generator"])
+
+# =======================
+# TAB 1: Summarizer & Q&A
+# =======================
 with main_tab1:
-    mode = st.radio("Input mode", ["Story IDs (comma-separated)", "WIQL Query", "Upload files (PDF/DOCX/TXT)"])
 
-    col1, col2 = st.columns([3,1])
+    # --- Input mode ---
+    if source_type == "Azure DevOps":
+        mode = st.radio("Input mode", ["Story IDs (comma-separated)", "WIQL Query", "Upload files (PDF/DOCX/TXT)"])
+    elif source_type == "Jira":
+        mode = st.radio("Input mode", ["Issue Keys (comma-separated)", "JQL Query", "Upload files (PDF/DOCX/TXT)"])
+    else:  # Confluence
+        mode = st.radio("Input mode", ["Page IDs (comma-separated)", "CQL Query", "Upload files (PDF/DOCX/TXT)"])
+
+    col1, col2 = st.columns([3, 1])
     with col1:
-        if mode == "Story IDs (comma-separated)":
-            story_ids = st.text_input("Enter story/work item IDs (comma-separated)", placeholder="e.g., 123, 456, 789")
-        elif mode == "WIQL Query":
-            wiql_query = st.text_area("Enter WIQL query", placeholder="SELECT [System.Id] FROM WorkItems WHERE ...")
+        if mode in ("Story IDs (comma-separated)", "Issue Keys (comma-separated)", "Page IDs (comma-separated)"):
+            label_map = {
+                "Story IDs (comma-separated)": "Enter story/work item IDs (comma-separated)",
+                "Issue Keys (comma-separated)": "Enter Jira issue keys (comma-separated)",
+                "Page IDs (comma-separated)": "Enter Confluence page IDs (comma-separated)",
+            }
+            placeholder_map = {
+                "Story IDs (comma-separated)": "e.g., 123, 456, 789",
+                "Issue Keys (comma-separated)": "e.g., PROJ-123, PROJ-456",
+                "Page IDs (comma-separated)": "e.g., 123456, 789012",
+            }
+            ids_input = st.text_input(label_map[mode], placeholder=placeholder_map[mode])
+        elif mode in ("WIQL Query", "JQL Query", "CQL Query"):
+            placeholder_map = {
+                "WIQL Query": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND ...",
+                "JQL Query": "project = PROJ AND issuetype = Story AND status != Done ORDER BY created DESC",
+                "CQL Query": 'space = "ENG" AND type = page AND title ~ "Feature" ORDER BY created DESC',
+            }
+            query_input = st.text_area(f"Enter {mode}", placeholder=placeholder_map[mode])
         else:
-            uploaded_files = st.file_uploader("Upload files (PDF, DOCX, TXT). You can upload multiple.", accept_multiple_files=True, type=["pdf","docx","txt","md"])
+            uploaded_files = st.file_uploader(
+                "Upload files (PDF, DOCX, TXT). Multiple allowed.",
+                accept_multiple_files=True, type=["pdf", "docx", "txt", "md"]
+            )
 
     with col2:
         st.markdown("### Options")
-        append_mode = st.checkbox("Append to existing embedded corpus (don't overwrite)", value=False)
-        generate_diagram = st.checkbox("Generate Flow Diagram", value=True, help="Create visual workflow diagram")
+        append_mode = st.checkbox("Append to existing corpus", value=False)
+        generate_diagram = st.checkbox("Generate Flow Diagram", value=True)
         process_btn = st.button("Fetch / Embed & Summarize")
 
     status = st.empty()
@@ -1273,63 +1084,171 @@ with main_tab1:
         try:
             status.info("Collecting inputs...")
             title_text_pairs = []
-            if mode == "Story IDs (comma-separated)":
-                if not story_ids or not story_ids.strip():
-                    st.warning("Please enter at least one story ID.")
-                else:
-                    ids = [s.strip() for s in re.split(r"[,\s]+", story_ids.strip()) if s.strip()]
-                    status.info(f"Fetching {len(ids)} work items from Azure DevOps...")
-                    for sid in ids:
-                        try:
-                            desc, ac = azure_fetch_work_item(org_input, project_input, sid, pat_input)
-                            comments = azure_fetch_work_item_comments(org_input, project_input, sid, pat_input)
-                            if comments:
-                                formatted_comments = "\n".join(
+
+            # ---- Azure DevOps ----
+            if source_type == "Azure DevOps":
+                org_v = st.session_state["org"]
+                proj_v = st.session_state["project"]
+                pat_v = st.session_state["pat"]
+
+                if mode == "Story IDs (comma-separated)":
+                    if not ids_input.strip():
+                        st.warning("Please enter at least one story ID.")
+                    else:
+                        ids = [s.strip() for s in re.split(r"[,\s]+", ids_input.strip()) if s.strip()]
+                        status.info(f"Fetching {len(ids)} work items from Azure DevOps...")
+                        for sid in ids:
+                            try:
+                                desc, ac = azure_fetch_work_item(org_v, proj_v, sid, pat_v)
+                                comments = azure_fetch_work_item_comments(org_v, proj_v, sid, pat_v)
+                                comments_text = "\n".join(
                                     [f"- [{c['author']}] ({c['created']}) ⭐{c['weight']}: {c['text']}" for c in comments]
-                                )
-                            else:
-                                formatted_comments = "No comments found."
-                            comments_text = formatted_comments
+                                ) if comments else "No comments found."
+                                combined = "\n\n".join(filter(None, [
+                                    "Description:\n" + desc if desc else "",
+                                    "Acceptance Criteria:\n" + ac if ac else "",
+                                    "Comments:\n" + comments_text,
+                                ]))
+                                title_text_pairs.append((f"WorkItem-{sid}", combined.strip()))
+                            except Exception as e:
+                                st.warning(f"Failed to fetch {sid}: {e}")
 
-                            combined = "\n\n".join([
-                                ("Description:\n" + desc) if desc else "",
-                                ("Acceptance Criteria:\n" + ac) if ac else "",
-                                ("Comments:\n" + comments_text) if comments_text else ""
-                            ])
-                            title_text_pairs.append((f"WorkItem-{sid}", combined.strip()))
+                elif mode == "WIQL Query":
+                    if not query_input.strip():
+                        st.warning("Please provide a WIQL query.")
+                    else:
+                        status.info("Running WIQL...")
+                        ids = azure_run_wiql(org_v, proj_v, query_input, pat_v)
+                        st.info(f"WIQL returned {len(ids)} work items.")
+                        for sid in ids:
+                            try:
+                                desc, ac = azure_fetch_work_item(org_v, proj_v, sid, pat_v)
+                                combined = "\n\n".join(filter(None, [
+                                    "Description:\n" + desc if desc else "",
+                                    "Acceptance Criteria:\n" + ac if ac else "",
+                                ]))
+                                title_text_pairs.append((f"WorkItem-{sid}", combined.strip()))
+                            except Exception as e:
+                                st.warning(f"Failed to fetch {sid}: {e}")
 
-                        except Exception as e:
-                            st.warning(f"Failed to fetch {sid}: {e}")
-            elif mode == "WIQL Query":
-                if not wiql_query or not wiql_query.strip():
-                    st.warning("Please provide a WIQL query.")
-                else:
-                    status.info("Running WIQL...")
-                    ids = azure_run_wiql(org_input, project_input, wiql_query, pat_input)
-                    st.info(f"WIQL returned {len(ids)} work items.")
-                    for sid in ids:
-                        try:
-                            desc, ac = azure_fetch_work_item(org_input, project_input, sid, pat_input)
-                            combined = "\n\n".join([("Description:\n" + desc) if desc else "", ("Acceptance Criteria:\n" + ac) if ac else ""])
-                            title_text_pairs.append((f"WorkItem-{sid}", combined.strip()))
-                        except Exception as e:
-                            st.warning(f"Failed to fetch {sid}: {e}")
+                else:  # Upload
+                    if not uploaded_files:
+                        st.warning("Please upload at least one file.")
+                    else:
+                        for f in uploaded_files:
+                            try:
+                                title_text_pairs.append((f.name, extract_text_from_file(f)))
+                            except Exception as e:
+                                st.warning(f"Failed to read {f.name}: {e}")
+
+            # ---- Jira ----
+            elif source_type == "Jira":
+                jira_url = st.session_state["jira_base_url"]
+                jira_email = st.session_state["jira_email"]
+                jira_token = st.session_state["jira_token"]
+                jira_ssl = st.session_state["jira_verify_ssl"]
+
+                if mode == "Issue Keys (comma-separated)":
+                    if not ids_input.strip():
+                        st.warning("Please enter at least one issue key.")
+                    else:
+                        keys = [s.strip() for s in re.split(r"[,\s]+", ids_input.strip()) if s.strip()]
+                        status.info(f"Fetching {len(keys)} Jira issues...")
+                        for key in keys:
+                            try:
+                                desc, ac = jira_fetch_issue(jira_url, jira_email, jira_token, key, jira_ssl)
+                                title = jira_fetch_issue_title(jira_url, jira_email, jira_token, key, jira_ssl)
+                                comments = jira_fetch_issue_comments(jira_url, jira_email, jira_token, key, jira_ssl)
+                                comments_text = "\n".join(
+                                    [f"- [{c['author']}] ({c['created']}): {c['text']}" for c in comments]
+                                ) if comments else "No comments found."
+                                combined = "\n\n".join(filter(None, [
+                                    "Description:\n" + desc if desc else "",
+                                    "Acceptance Criteria:\n" + ac if ac else "",
+                                    "Comments:\n" + comments_text,
+                                ]))
+                                title_text_pairs.append((f"{key} - {title}", combined.strip()))
+                            except Exception as e:
+                                st.warning(f"Failed to fetch {key}: {e}")
+
+                elif mode == "JQL Query":
+                    if not query_input.strip():
+                        st.warning("Please provide a JQL query.")
+                    else:
+                        status.info("Running JQL query...")
+                        keys = jira_run_jql(jira_url, jira_email, jira_token, query_input, jira_ssl)
+                        st.info(f"JQL returned {len(keys)} issues.")
+                        for key in keys:
+                            try:
+                                desc, ac = jira_fetch_issue(jira_url, jira_email, jira_token, key, jira_ssl)
+                                title = jira_fetch_issue_title(jira_url, jira_email, jira_token, key, jira_ssl)
+                                combined = "\n\n".join(filter(None, [
+                                    "Description:\n" + desc if desc else "",
+                                    "Acceptance Criteria:\n" + ac if ac else "",
+                                ]))
+                                title_text_pairs.append((f"{key} - {title}", combined.strip()))
+                            except Exception as e:
+                                st.warning(f"Failed to fetch {key}: {e}")
+
+                else:  # Upload
+                    if not uploaded_files:
+                        st.warning("Please upload at least one file.")
+                    else:
+                        for f in uploaded_files:
+                            try:
+                                title_text_pairs.append((f.name, extract_text_from_file(f)))
+                            except Exception as e:
+                                st.warning(f"Failed to read {f.name}: {e}")
+
+            # ---- Confluence ----
             else:
-                if not uploaded_files:
-                    st.warning("Please upload at least one file.")
-                else:
-                    for f in uploaded_files:
-                        try:
-                            text = extract_text_from_file(f)
-                            title_text_pairs.append((f.name, text))
-                        except Exception as e:
-                            st.warning(f"Failed to read {f.name}: {e}")
+                conf_url = st.session_state["conf_base_url"]
+                conf_email = st.session_state["conf_email"]
+                conf_token = st.session_state["conf_token"]
+                conf_ssl = st.session_state["conf_verify_ssl"]
 
+                if mode == "Page IDs (comma-separated)":
+                    if not ids_input.strip():
+                        st.warning("Please enter at least one page ID.")
+                    else:
+                        page_ids = [s.strip() for s in re.split(r"[,\s]+", ids_input.strip()) if s.strip()]
+                        status.info(f"Fetching {len(page_ids)} Confluence pages...")
+                        for pid in page_ids:
+                            try:
+                                title, content = confluence_fetch_page(conf_url, conf_email, conf_token, pid, conf_ssl)
+                                title_text_pairs.append((f"Page-{pid}: {title}", content.strip()))
+                            except Exception as e:
+                                st.warning(f"Failed to fetch page {pid}: {e}")
+
+                elif mode == "CQL Query":
+                    if not query_input.strip():
+                        st.warning("Please provide a CQL query.")
+                    else:
+                        status.info("Running CQL query...")
+                        page_ids = confluence_search_cql(conf_url, conf_email, conf_token, query_input, conf_ssl)
+                        st.info(f"CQL returned {len(page_ids)} pages.")
+                        for pid in page_ids:
+                            try:
+                                title, content = confluence_fetch_page(conf_url, conf_email, conf_token, pid, conf_ssl)
+                                title_text_pairs.append((f"Page-{pid}: {title}", content.strip()))
+                            except Exception as e:
+                                st.warning(f"Failed to fetch page {pid}: {e}")
+
+                else:  # Upload
+                    if not uploaded_files:
+                        st.warning("Please upload at least one file.")
+                    else:
+                        for f in uploaded_files:
+                            try:
+                                title_text_pairs.append((f.name, extract_text_from_file(f)))
+                            except Exception as e:
+                                st.warning(f"Failed to read {f.name}: {e}")
+
+            # ---- Embed & Summarize (common for all sources) ----
             if not title_text_pairs:
-                status.error("No content collected to embed. Fix errors above and try again.")
+                status.error("No content collected. Fix errors above and try again.")
             else:
                 st.session_state["story_data"] = title_text_pairs
-                
                 docs = build_docs_from_texts(title_text_pairs)
                 if not docs:
                     status.error("No valid text extracted from inputs.")
@@ -1337,26 +1256,19 @@ with main_tab1:
                     status.info("Splitting & embedding documents into FAISS...")
                     split_docs = []
                     for d in docs:
-                        chunks = strict_split(d.page_content, chunk_size=1000, chunk_overlap=200)
-                        for i, c in enumerate(chunks):
+                        for i, c in enumerate(strict_split(d.page_content, chunk_size=1000, chunk_overlap=200)):
                             split_docs.append(Document(page_content=c, metadata={"source": d.metadata.get("source"), "chunk": i}))
                     embeddings = HuggingFaceEmbeddings(model_name=embed_model_name)
                     new_vs = FAISS.from_documents(split_docs, embeddings)
-                    
-                    if append_mode and st.session_state.get("vectorstore") is not None:
-                        st.session_state["vectorstore"] = new_vs
-                    else:
-                        st.session_state["vectorstore"] = new_vs
-                        
+                    st.session_state["vectorstore"] = new_vs
                     st.session_state["docs_sources"] = [t for t, _ in title_text_pairs]
-                    
+
                     try:
                         llm = get_llm_instance()
                         if st.session_state.get("retrieval_chain") is not None:
                             memory = st.session_state["retrieval_chain"].memory
                         else:
                             memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-                        
                         retriever = st.session_state["vectorstore"].as_retriever(search_kwargs={"k": 4})
                         conv_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
                         st.session_state["retrieval_chain"] = conv_chain
@@ -1364,46 +1276,45 @@ with main_tab1:
                     except Exception as e:
                         st.session_state["retrieval_chain"] = None
                         status.warning(f"Embeddings created but LLM not initialized: {e}")
-                    
-                    if generate_diagram and len(title_text_pairs) > 0:
+
+                    if generate_diagram:
                         status.info("Generating flow diagram...")
                         try:
-                            flow_diagram = generate_flow_diagram(title_text_pairs)
-                            st.session_state["flow_diagram"] = flow_diagram
+                            st.session_state["flow_diagram"] = generate_flow_diagram(title_text_pairs)
                         except Exception as e:
                             st.warning(f"Could not generate flow diagram: {e}")
-                    
+
                     status.info("Generating summary...")
                     combined_text = "\n\n".join([f"{title}\n\n{text[:5000]}" for title, text in title_text_pairs])
+                    source_label = {"Azure DevOps": "Azure DevOps user stories", "Jira": "Jira issues", "Confluence": "Confluence pages"}.get(source_type, "items")
                     summary_prompt = f"""
 You are an expert Agile analyst and QA architect.
-Summarize the following Azure DevOps user stories clearly in Markdown format.
+Summarize the following {source_label} clearly in Markdown format.
 
 Make sure to:
-1. Extract main objectives from Description and Acceptance Criteria.
-2. Analyze developer and QA comments for decisions, deferrals, or concerns.
+1. Extract main objectives from the Description and Acceptance Criteria (if present).
+2. Analyze any comments or discussion notes for decisions, deferrals, or concerns.
 3. Highlight any risk areas, incomplete work, or postponed validations.
-4. Give a short "Discussion Summary" section for each story.
+4. Give a short "Discussion Summary" section for each item.
 
-Each story summary should follow this format:
+Each item summary should follow this format:
 
-### 🧩 {{Story Title}}
+### 🧩 {{Item Title}}
 
 **Overview**
-- One or two lines explaining what this story is about.
+- One or two lines explaining what this item is about.
 
 **Layman Summary**
-- Summarize the whole story in layman terms + bullet points
+- Summarize the whole item in plain terms with bullet points.
 
 **P0 Scenarios**
-- Tell the most critical and P0 scenarios which are mandatory
+- The most critical scenarios that are mandatory.
 
 **Acceptance & Completion Criteria**
 - Summarize the acceptance or done conditions.
 
 **Comment Insights**
 - Mention relevant comments or discussion takeaways.
-- Prioritize developer or QA comments (⭐3 or ⭐2).
 
 ---
 
@@ -1411,212 +1322,53 @@ CONTENT START
 {combined_text}
 CONTENT END
 """
-
                     try:
-                        llm_temp = get_llm_instance()
-                        raw_out = llm_temp.invoke(summary_prompt)
-                        layman_summary = extract_llm_text(raw_out)
-                        st.session_state["layman_summary"] = layman_summary
+                        raw_out = get_llm_instance().invoke(summary_prompt)
+                        st.session_state["layman_summary"] = extract_llm_text(raw_out)
                     except Exception as e:
                         st.session_state["layman_summary"] = f"(Summary not generated: {e})"
-                        
+
                     status.success("Done!")
         except Exception as e:
             status.error(f"Failed: {e}")
 
-    # Flow Diagram Section
-    # Find this section in your code (around line 1050-1150) and REPLACE it:
-
-# Flow Diagram Section
+    # Flow Diagram
     if st.session_state.get("flow_diagram"):
         st.markdown("---")
-        
-        # Header with expand button
-        col_header1, col_header2, col_header3 = st.columns([3, 1, 1])
-        with col_header1:
-            st.header("📊 Visual Flow Diagram")
-        with col_header2:
-            if st.button("🔄 Regenerate", key="regen_btn"):
-                if st.session_state.get("story_data"):
-                    try:
-                        flow_diagram = generate_flow_diagram(st.session_state["story_data"])
-                        st.session_state["flow_diagram"] = flow_diagram
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
-        with col_header3:
-            # Toggle fullscreen mode
-            if "diagram_fullscreen" not in st.session_state:
-                st.session_state["diagram_fullscreen"] = False
-            
-            if st.session_state["diagram_fullscreen"]:
-                if st.button("🗙 Exit Fullscreen", key="exit_fullscreen_btn", type="primary"):
-                    st.session_state["diagram_fullscreen"] = False
+        st.header("📊 Visual Flow Diagram")
+        if st.button("🔄 Regenerate", key="regen_btn"):
+            if st.session_state.get("story_data"):
+                try:
+                    st.session_state["flow_diagram"] = generate_flow_diagram(st.session_state["story_data"])
                     st.rerun()
-            else:
-                if st.button("⛶ Fullscreen", key="fullscreen_btn"):
-                    st.session_state["diagram_fullscreen"] = True
-                    st.rerun()
-        
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+
         diagram_code = st.session_state["flow_diagram"]
-        
-        # Clean diagram code
         if "content='" in diagram_code:
-            match = re.search(r'(graph\s+\w+.*?)(?=\'|$)', diagram_code, re.DOTALL)
-            if match:
-                diagram_code = match.group(1)
-        
-        diagram_code = diagram_code.replace('\\n', '\n')
-        diagram_code = re.sub(r'```.*?```', '', diagram_code, flags=re.DOTALL)
-        diagram_code = diagram_code.strip()
-        
-        # Determine height based on fullscreen mode
-        diagram_height = 1200 if st.session_state.get("diagram_fullscreen") else 500
-        
-        # Create tabs
+            m = re.search(r"(graph\s+\w+.*?)(?='|$)", diagram_code, re.DOTALL)
+            if m:
+                diagram_code = m.group(1)
+        diagram_code = diagram_code.replace("\\n", "\n")
+        diagram_code = re.sub(r"```.*?```", "", diagram_code, flags=re.DOTALL).strip()
+
         tab1, tab2 = st.tabs(["🎯 Visual Diagram", "📝 Code"])
-        
         with tab1:
-            if st.session_state.get("diagram_fullscreen"):
-                st.info("💡 Fullscreen mode active - Scroll down to see the complete diagram. Click 'Exit Fullscreen' above to return.")
-            
-            # Render using Mermaid.js with dynamic height
-            mermaid_html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-                <script>
-                    mermaid.initialize({{ 
-                        startOnLoad: true, 
-                        theme: 'default',
-                        flowchart: {{
-                            useMaxWidth: true,
-                            htmlLabels: true,
-                            curve: 'basis'
-                        }}
-                    }});
-                </script>
-                <style>
-                    body {{ 
-                        font-family: Arial, sans-serif;
-                        margin: 20px;
-                        background: white;
-                        overflow: auto;
-                    }}
-                    .mermaid {{ 
-                        text-align: center;
-                        width: 100%;
-                        height: auto;
-                        min-height: {diagram_height - 100}px;
-                    }}
-                    svg {{
-                        max-width: 100%;
-                        height: auto;
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="mermaid">
-    {diagram_code}
-                </div>
-            </body>
-            </html>
-            """
-            
+            mermaid_html = f"""<!DOCTYPE html><html><head>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({{ startOnLoad: true, theme: 'default' }});</script>
+<style>body {{ font-family: Arial, sans-serif; margin: 20px; background: white; }} .mermaid {{ text-align: center; }}</style>
+</head><body><div class="mermaid">{diagram_code}</div></body></html>"""
             import streamlit.components.v1 as components
-            components.html(mermaid_html, height=diagram_height, scrolling=True)
-        
+            components.html(mermaid_html, height=500, scrolling=True)
         with tab2:
             st.code(diagram_code, language="mermaid")
-            
-            col_dl1, col_dl2 = st.columns(2)
-            with col_dl1:
-                st.download_button(
-                    label="💾 Download Mermaid Code",
-                    data=diagram_code,
-                    file_name="flow_diagram.mmd",
-                    mime="text/plain",
-                    key="download_btn"
-                )
-            with col_dl2:
-                # Option to download as image (via link to mermaid.live)
-                import urllib.parse
-                encoded_diagram = urllib.parse.quote(diagram_code)
-                mermaid_live_url = f"https://mermaid.live/edit#pako:{encoded_diagram}"
-                st.markdown(f"[🖼️ Open in Mermaid Live Editor]({mermaid_live_url})")
-    # if st.session_state.get("flow_diagram"):
-    #     st.markdown("---")
-    #     st.header("📊 Visual Flow Diagram")
-        
-    #     if st.button("🔄 Regenerate", key="regen_btn"):
-    #         if st.session_state.get("story_data"):
-    #             try:
-    #                 flow_diagram = generate_flow_diagram(st.session_state["story_data"])
-    #                 st.session_state["flow_diagram"] = flow_diagram
-    #                 st.rerun()
-    #             except Exception as e:
-    #                 st.error(f"Failed: {e}")
-        
-    #     diagram_code = st.session_state["flow_diagram"]
-        
-    #     # Clean diagram code
-    #     if "content='" in diagram_code:
-    #         match = re.search(r'(graph\s+\w+.*?)(?=\'|$)', diagram_code, re.DOTALL)
-    #         if match:
-    #             diagram_code = match.group(1)
-        
-    #     diagram_code = diagram_code.replace('\\n', '\n')
-    #     diagram_code = re.sub(r'```.*?```', '', diagram_code, flags=re.DOTALL)
-    #     diagram_code = diagram_code.strip()
-        
-    #     # Create tabs
-    #     tab1, tab2 = st.tabs(["🎯 Visual Diagram", "📝 Code"])
-        
-    #     with tab1:
-    #         # Render using Mermaid.js
-    #         mermaid_html = f"""
-    #         <!DOCTYPE html>
-    #         <html>
-    #         <head>
-    #             <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-    #             <script>
-    #                 mermaid.initialize({{ startOnLoad: true, theme: 'default' }});
-    #             </script>
-    #             <style>
-    #                 body {{ 
-    #                     font-family: Arial, sans-serif;
-    #                     margin: 20px;
-    #                     background: white;
-    #                 }}
-    #                 .mermaid {{ text-align: center; }}
-    #             </style>
-    #         </head>
-    #         <body>
-    #             <div class="mermaid">
-    # {diagram_code}
-    #             </div>
-    #         </body>
-    #         </html>
-    #         """
-            
-    #         import streamlit.components.v1 as components
-    #         components.html(mermaid_html, height=500, scrolling=True)
-        
-    #     with tab2:
-    #         st.code(diagram_code, language="mermaid")
-    #         st.download_button(
-    #             label="💾 Download Mermaid Code",
-    #             data=diagram_code,
-    #             file_name="flow_diagram.mmd",
-    #             mime="text/plain",
-    #             key="download_btn"
-    #         )
+            st.download_button("💾 Download Mermaid Code", data=diagram_code,
+                               file_name="flow_diagram.mmd", mime="text/plain", key="download_btn")
 
-    # Layman Summary
+    # Summary
     st.markdown("---")
     st.header("📄 Summary")
-
     if st.session_state.get("layman_summary"):
         summary = st.session_state["layman_summary"]
         if isinstance(summary, str):
@@ -1625,10 +1377,9 @@ CONTENT END
     else:
         st.info("No summary yet.")
 
-    # Q&A Section
+    # Q&A
     st.markdown("---")
     st.header("💬 Ask Questions")
-
     if st.session_state.get("vectorstore") is None:
         st.info("Embed content first.")
     elif st.session_state.get("retrieval_chain") is None:
@@ -1637,225 +1388,239 @@ CONTENT END
         with st.form(key="qa_form", clear_on_submit=True):
             user_q = st.text_input("Ask a question:", key="q_input")
             submit_q = st.form_submit_button("Ask")
-
         if submit_q and user_q.strip():
             try:
-                chain = st.session_state["retrieval_chain"]
-                result = chain.invoke({"question": user_q})
+                result = st.session_state["retrieval_chain"].invoke({"question": user_q})
                 answer = extract_llm_text(result)
                 st.session_state.qa_history.insert(0, (user_q, answer))
                 st.rerun()
             except Exception as e:
                 st.error(f"Error: {e}")
-
         if st.session_state.qa_history:
             st.markdown(f"### 💬 History ({len(st.session_state.qa_history)} questions)")
             for idx, (q, a) in enumerate(st.session_state.qa_history):
                 with st.expander(f"Q{len(st.session_state.qa_history) - idx}: {q}", expanded=(idx == 0)):
                     st.markdown(f"**Answer:**\n\n{a}")
 
-    # SMART TESTING FOCUS / RISK ANALYSIS SECTION
-    st.markdown("---")
-    st.header("🧪 Smart Testing Focus & Risk Zones")
+    # Smart Testing Focus — Azure DevOps only
+    if source_type == "Azure DevOps":
+        st.markdown("---")
+        st.header("🧪 Smart Testing Focus & Risk Zones")
+        if st.session_state.get("story_data") and st.session_state.get("vectorstore"):
+            selected_story = st.selectbox(
+                "Select a story to analyze for linked PRs:",
+                options=[t for t, _ in st.session_state["story_data"]],
+            )
+            if st.button("🔍 Analyze Linked PRs & Suggest Test Focus"):
+                story_text = next((text for title, text in st.session_state["story_data"] if title == selected_story), "")
+                story_id = re.sub(r"[^\d]", "", selected_story)
+                with st.spinner("Analyzing PRs and generating smart testing insights..."):
+                    pr_analysis = generate_pr_test_focus(
+                        org=st.session_state["org"],
+                        project=st.session_state["project"],
+                        story_id=story_id,
+                        pat=st.session_state["pat"],
+                        story_text=story_text,
+                    )
+                    st.session_state["pr_analysis"] = pr_analysis
+                    st.success("✅ Analysis complete!")
+        if st.session_state.get("pr_analysis"):
+            st.markdown(st.session_state["pr_analysis"], unsafe_allow_html=True)
+        else:
+            st.info("Select a story and click 'Analyze Linked PRs' to generate insights.")
 
-    if st.session_state.get("story_data") and st.session_state.get("vectorstore"):
-        selected_story = st.selectbox(
-            "Select a story to analyze for linked PRs:",
-            options=[t for t, _ in st.session_state["story_data"]],
-            help="Choose a story whose PR impact you want to analyze"
-        )
-        
-        if st.button("🔍 Analyze Linked PRs & Suggest Test Focus"):
-            story_text = next((text for title, text in st.session_state["story_data"] if title == selected_story), "")
-            story_id = re.sub(r"[^\d]", "", selected_story)  # Extract numeric ID
-            with st.spinner("Analyzing PRs and generating smart testing insights..."):
-                pr_analysis = generate_pr_test_focus(
-                    org=st.session_state["org"],
-                    project=st.session_state["project"],
-                    story_id=story_id,
-                    pat=st.session_state["pat"],
-                    story_text=story_text
-                )
-                st.session_state["pr_analysis"] = pr_analysis
-                st.success("✅ Analysis complete!")
-
-    if st.session_state.get("pr_analysis"):
-        st.markdown(st.session_state["pr_analysis"], unsafe_allow_html=True)
-    else:
-        st.info("Select a story and click 'Analyze Linked PRs & Suggest Test Focus' to generate insights.")
-
-    # Debug
+    # Debug / Reset
     st.markdown("---")
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("📄 Sources", key="src_btn"):
             st.json(st.session_state.get("docs_sources", []))
     with col2:
-        if st.button("🎨 Diagram", key="diag_btn"):
+        if st.button("🎨 Regenerate Diagram", key="diag_btn"):
             if st.session_state.get("story_data"):
-                flow_diagram = generate_flow_diagram(st.session_state["story_data"])
-                st.session_state["flow_diagram"] = flow_diagram
+                st.session_state["flow_diagram"] = generate_flow_diagram(st.session_state["story_data"])
                 st.rerun()
     with col3:
-        if st.button("🗑️ Reset", key="reset_btn"):
-            for key in ["vectorstore", "retrieval_chain", "docs_sources", "layman_summary", "chat_history", "qa_history", "flow_diagram", "story_data", "pr_analysis"]:
+        if st.button("🗑️ Reset All", key="reset_btn"):
+            for key in ["vectorstore", "retrieval_chain", "docs_sources", "layman_summary",
+                        "chat_history", "qa_history", "flow_diagram", "story_data", "pr_analysis"]:
                 st.session_state.pop(key, None)
             st.rerun()
 
-# -------------------------
-# TAB 2: Test Case Generator (New functionality)
-# -------------------------
+# =======================
+# TAB 2: Test Case Generator
+# =======================
 with main_tab2:
     st.header("🧪 AI-Powered Test Case Generator")
-    st.markdown("""
-    Generate comprehensive test cases for Azure DevOps user stories using AI.
-    The system will create 30-100 test cases covering all scenarios including edge cases, negative testing, and more.
-    """)
-    
-    # Check dependencies
+    st.markdown(f"Generate comprehensive test cases from **{source_type}** using AI (30–100 cases per item).")
+
     if not GROQ_CLIENT_AVAILABLE:
         st.error("⚠️ Groq client not installed. Run: `pip install groq`")
     if pd is None or openpyxl is None:
         st.error("⚠️ Excel libraries not installed. Run: `pip install pandas openpyxl`")
-    
-    test_mode = st.radio("Select input mode for test case generation:", 
-                         ["Story IDs (comma-separated)", "WIQL Query"], 
-                         key="test_mode")
-    
+
+    # Input mode options based on source type
+    if source_type == "Azure DevOps":
+        test_mode_options = ["Story IDs (comma-separated)", "WIQL Query"]
+    elif source_type == "Jira":
+        test_mode_options = ["Issue Keys (comma-separated)", "JQL Query"]
+    else:
+        test_mode_options = ["Page IDs (comma-separated)", "CQL Query"]
+
+    test_mode = st.radio("Input mode for test case generation:", test_mode_options, key="test_mode")
+
     col1, col2 = st.columns([3, 1])
-    
     with col1:
-        if test_mode == "Story IDs (comma-separated)":
-            test_story_ids = st.text_input(
-                "Enter story/work item IDs (comma-separated)", 
-                placeholder="e.g., 123, 456, 789",
-                key="test_story_ids"
-            )
+        if test_mode in ("Story IDs (comma-separated)", "Issue Keys (comma-separated)", "Page IDs (comma-separated)"):
+            placeholder_map2 = {
+                "Story IDs (comma-separated)": "e.g., 123, 456, 789",
+                "Issue Keys (comma-separated)": "e.g., PROJ-123, PROJ-456",
+                "Page IDs (comma-separated)": "e.g., 123456, 789012",
+            }
+            test_ids_input = st.text_input("Enter IDs / keys", placeholder=placeholder_map2[test_mode], key="test_ids_input")
         else:
-            test_wiql_query = st.text_area(
-                "Enter WIQL query", 
-                placeholder="SELECT [System.Id] FROM WorkItems WHERE ...",
-                key="test_wiql"
-            )
-    
+            placeholder_map3 = {
+                "WIQL Query": "SELECT [System.Id] FROM WorkItems WHERE ...",
+                "JQL Query": "project = PROJ AND issuetype = Story ORDER BY created DESC",
+                "CQL Query": 'space = "ENG" AND type = page ORDER BY created DESC',
+            }
+            test_query_input = st.text_area(f"Enter {test_mode}", placeholder=placeholder_map3[test_mode], key="test_query_input")
+
     with col2:
         st.markdown("### Settings")
-        
-        test_model = st.selectbox(
-            "AI Model",
-            ["llama-3.3-70b-versatile", "openai/gpt-oss-20b", "groq/compound","qwen/qwen3-32b"],
-            key="test_model"
-        )
+        test_model = st.selectbox("AI Model", ["llama-3.3-70b-versatile", "openai/gpt-oss-20b", "groq/compound"], key="test_model")
         generate_test_btn = st.button("🚀 Generate Test Cases", type="primary")
-    
+
     test_status = st.empty()
-    
+
     if generate_test_btn:
         if not st.session_state.get("groq_key"):
-            test_status.error("❌ GROQ_API_KEY not found. Please set it in your .env file or sidebar.")
+            test_status.error("❌ GROQ_API_KEY not set. Check your .env file.")
         elif not GROQ_CLIENT_AVAILABLE or pd is None or openpyxl is None:
-            test_status.error("❌ Required libraries not installed. Check error messages above.")
+            test_status.error("❌ Required libraries not installed.")
         else:
             try:
-                test_status.info("🔍 Collecting story IDs...")
-                
-                # Collect story IDs
-                story_ids_list = []
-                if test_mode == "Story IDs (comma-separated)":
-                    if not test_story_ids or not test_story_ids.strip():
-                        test_status.warning("⚠️ Please enter at least one story ID.")
+                test_status.info("🔍 Collecting IDs...")
+                groq_key = st.session_state["groq_key"]
+                excel_file = None
+
+                if source_type == "Azure DevOps":
+                    org_v = st.session_state["org"]
+                    proj_v = st.session_state["project"]
+                    pat_v = st.session_state["pat"]
+
+                    if test_mode == "Story IDs (comma-separated)":
+                        if not test_ids_input.strip():
+                            test_status.warning("Please enter at least one story ID.")
+                        else:
+                            ids_list = [s.strip() for s in re.split(r"[,\s]+", test_ids_input.strip()) if s.strip()]
+                            test_status.info(f"⚙️ Generating test cases for {len(ids_list)} stories...")
+                            excel_file = generate_test_cases_excel_azure(ids_list, org_v, proj_v, pat_v, groq_key, test_model)
                     else:
-                        story_ids_list = [s.strip() for s in re.split(r"[,\s]+", test_story_ids.strip()) if s.strip()]
-                else:
-                    if not test_wiql_query or not test_wiql_query.strip():
-                        test_status.warning("⚠️ Please provide a WIQL query.")
+                        if not test_query_input.strip():
+                            test_status.warning("Please provide a WIQL query.")
+                        else:
+                            test_status.info("🔍 Running WIQL...")
+                            ids_list = azure_run_wiql(org_v, proj_v, test_query_input, pat_v)
+                            test_status.info(f"✅ Found {len(ids_list)} work items.")
+                            excel_file = generate_test_cases_excel_azure(ids_list, org_v, proj_v, pat_v, groq_key, test_model)
+
+                elif source_type == "Jira":
+                    jira_url = st.session_state["jira_base_url"]
+                    jira_email = st.session_state["jira_email"]
+                    jira_token = st.session_state["jira_token"]
+                    jira_ssl = st.session_state["jira_verify_ssl"]
+
+                    if test_mode == "Issue Keys (comma-separated)":
+                        if not test_ids_input.strip():
+                            test_status.warning("Please enter at least one issue key.")
+                        else:
+                            keys_list = [s.strip() for s in re.split(r"[,\s]+", test_ids_input.strip()) if s.strip()]
+                            test_status.info(f"⚙️ Generating test cases for {len(keys_list)} issues...")
+                            excel_file = generate_test_cases_excel_jira(keys_list, jira_url, jira_email, jira_token, groq_key, test_model, jira_ssl)
                     else:
-                        test_status.info("🔍 Running WIQL query...")
-                        story_ids_list = azure_run_wiql(
-                            st.session_state["org"],
-                            st.session_state["project"],
-                            test_wiql_query,
-                            st.session_state["pat"]
-                        )
-                        test_status.info(f"✅ Found {len(story_ids_list)} work items")
-                
-                if not story_ids_list:
-                    test_status.error("❌ No stories found to process.")
-                else:
-                    test_status.info(f"⚙️ Generating test cases for {len(story_ids_list)} stories...")
-                    
-                    # Generate test cases
-                    excel_file = generate_test_cases_excel(
-                        story_ids_list,
-                        st.session_state["org"],
-                        st.session_state["project"],
-                        st.session_state["pat"],
-                        st.session_state["groq_key"],
-                        test_model
-                    )
-                    
+                        if not test_query_input.strip():
+                            test_status.warning("Please provide a JQL query.")
+                        else:
+                            test_status.info("🔍 Running JQL...")
+                            keys_list = jira_run_jql(jira_url, jira_email, jira_token, test_query_input, jira_ssl)
+                            test_status.info(f"✅ Found {len(keys_list)} issues.")
+                            excel_file = generate_test_cases_excel_jira(keys_list, jira_url, jira_email, jira_token, groq_key, test_model, jira_ssl)
+
+                else:  # Confluence
+                    conf_url = st.session_state["conf_base_url"]
+                    conf_email = st.session_state["conf_email"]
+                    conf_token = st.session_state["conf_token"]
+                    conf_ssl = st.session_state["conf_verify_ssl"]
+
+                    if test_mode == "Page IDs (comma-separated)":
+                        if not test_ids_input.strip():
+                            test_status.warning("Please enter at least one page ID.")
+                        else:
+                            pids_list = [s.strip() for s in re.split(r"[,\s]+", test_ids_input.strip()) if s.strip()]
+                            test_status.info(f"⚙️ Generating test cases for {len(pids_list)} pages...")
+                            excel_file = generate_test_cases_excel_confluence(pids_list, conf_url, conf_email, conf_token, groq_key, test_model, conf_ssl)
+                    else:
+                        if not test_query_input.strip():
+                            test_status.warning("Please provide a CQL query.")
+                        else:
+                            test_status.info("🔍 Running CQL...")
+                            pids_list = confluence_search_cql(conf_url, conf_email, conf_token, test_query_input, conf_ssl)
+                            test_status.info(f"✅ Found {len(pids_list)} pages.")
+                            excel_file = generate_test_cases_excel_confluence(pids_list, conf_url, conf_email, conf_token, groq_key, test_model, conf_ssl)
+
+                if excel_file:
                     st.session_state["test_cases_excel"] = excel_file
-                    test_status.success(f"✅ Test cases generated successfully for {len(story_ids_list)} stories!")
-                    
+                    test_status.success("✅ Test cases generated successfully!")
+
             except Exception as e:
                 test_status.error(f"❌ Error: {str(e)}")
                 import traceback
                 st.error(traceback.format_exc())
-    
-    # Download section
+
     if st.session_state.get("test_cases_excel"):
         st.markdown("---")
         st.subheader("📥 Download Test Cases")
-        
-        col1, col2, col3 = st.columns([2, 1, 1])
-        
+        col1, col2 = st.columns([2, 1])
         with col1:
             st.download_button(
                 label="💾 Download Excel File",
                 data=st.session_state["test_cases_excel"],
                 file_name=f"test_cases_{time.strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_test_cases"
+                key="download_test_cases",
             )
-        
         with col2:
             if st.button("🗑️ Clear Results", key="clear_test_results"):
                 st.session_state["test_cases_excel"] = None
                 st.rerun()
-        
-        st.info("ℹ️ The Excel file contains formatted test cases with proper line breaks. Each story has its own sheet.")
-    
-    # Instructions
+        st.info("ℹ️ Each item has its own sheet. Test steps are formatted with line breaks.")
+
     st.markdown("---")
     with st.expander("ℹ️ How to use Test Case Generator"):
-        st.markdown("""
-        ### Instructions
-        
-        1. **Configure Azure DevOps credentials** in the sidebar (Organization, Project, PAT)
-        2. **Ensure GROQ_API_KEY** is set in your environment or .env file
-        3. **Choose input mode:**
-           - **Story IDs**: Enter comma-separated work item IDs (e.g., 123, 456, 789)
-           - **WIQL Query**: Write a custom WIQL query to fetch multiple stories
-        4. **Select AI model** (llama-3.3-70b-versatile recommended)
-        5. **Click "Generate Test Cases"** and wait for processing
-        6. **Download the Excel file** with comprehensive test cases
-        
-        ### What you get
-        - 30-100 test cases per story covering:
-          - ✅ Positive scenarios
-          - ❌ Negative scenarios  
-          - 🔄 Edge cases and boundary values
-          - 🔗 Integration scenarios
-          - 🔐 Security test cases
-          - ♿ Accessibility checks
-          - 📱 Compatibility testing
-        
-        ### Excel Format
-        Each sheet contains:
-        - Test Case ID
-        - Priority (High/Medium/Low)
-        - Test Case title
-        - Pre-conditions/Test Data
-        - Test Steps (formatted with line breaks)
-        - Expected Results
-        """)
+        st.markdown(f"""
+### Instructions
+
+1. **Select Data Source** in the sidebar: Azure DevOps, Jira, or Confluence
+2. **Configure credentials** for the selected source
+3. **Ensure GROQ_API_KEY** is set in your .env file
+4. **Choose input mode** (IDs/Keys or Query language)
+5. **Click "Generate Test Cases"** and wait for processing
+6. **Download the Excel file**
+
+### Supported Sources
+
+| Source | Input | Query Language |
+|--------|-------|---------------|
+| Azure DevOps | Work Item IDs | WIQL |
+| Jira | Issue Keys (e.g. PROJ-123) | JQL |
+| Confluence | Page IDs | CQL |
+
+### What you get (30–100 test cases per item)
+- ✅ Positive & negative scenarios
+- 🔄 Edge cases and boundary values
+- 🔗 Integration scenarios
+- 🔐 Security test cases
+- ♿ Accessibility checks
+- 📱 Compatibility testing
+""")
